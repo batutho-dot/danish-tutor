@@ -2,8 +2,7 @@
 
 <img src="docs/icon.png" alt="icon" width="120">
 
-A Claude Code plugin for spoken Danish practice: a 15 minute conversation, a hidden listening drill, and spaced repetition that remembers what you learned.
-For learners around A2 to B1 who want to speak and listen, not fill in drills.
+A Claude Code plugin for spoken Danish practice: a 15 minute conversation, a hidden listening drill, and spaced repetition. For learners around A2 to B1 who want to speak and listen, not fill in drills.
 
 From the invented example session (English in brackets):
 
@@ -12,22 +11,13 @@ Tutor:   Hej! Hvad har du lyst til at tale om i dag?   (Hi! What would you like 
 Learner: Morgenmad og at købe ind.                     (Breakfast and shopping.)
 Tutor:   Hvad spiser du til morgenmad?                 (What do you eat for breakfast?)
 Learner: Brød, men ikke i dag, fordi jeg har ikke tid. (Bread, but not today, because I don't have time.)
-Tutor:   Nå, så har du travlt i dag?                   (Oh, so you're busy today?)
-Learner: Ja, og jeg har glemt min nøgle.               (Yes, and I have forgotten my key.)
 ```
 
 The word order slip ("har ikke" should be "ikke har") is logged silently and comes back in the debrief and later sessions.
 
-## What you need
-
-- Claude Code
-- Python 3.10+
-- A Danish text-to-speech voice for the listening drill
-- Dictation (optional; typing works)
-
 ## Install
 
-In Claude Code:
+You need Claude Code, Python 3.10+ and a Danish text-to-speech voice for the listening drill. Dictation is optional; typing works. In Claude Code:
 
 ```
 /plugin marketplace add batutho-dot/danish-tutor
@@ -36,7 +26,7 @@ In Claude Code:
 
 Then type `/dansk` (`/dansk kort` for 5 minutes, `/dansk lyt` for listening only).
 
-Optional settings (level, goal, support language, voice speed): copy `skills/dansk/config.example.json` from this repository to `~/.claude/danish-tutor/config.json`.
+Optional settings (level, goal, support language, voice speed): copy `skills/dansk/config.example.json` to `~/.claude/danish-tutor/config.json`.
 
 ## How it works
 
@@ -50,9 +40,7 @@ flowchart LR
   F --> G[Optional: open the app]
 ```
 
-Due items are woven into a conversation on your topic. Corrections wait until the debrief. Listening sentences are spoken, never shown first. One `record` call saves everything in a single transaction and prints a line like `saved session-2026-11-02, 6 reviews, 3 new words, 1 errors; 9 items due tomorrow`.
-
-Scheduling: SM-2 (Wozniak 1990), in `scripts/dansk_db.py`.
+Due items are woven into a conversation on your topic. Corrections wait until the debrief. Listening sentences are spoken, never shown first. One `record` call saves everything in one transaction and prints a line like `saved session-2026-11-02, 6 reviews, 3 new words, 1 errors; 9 items due tomorrow`. Scheduling is SM-2 (Wozniak 1990), in `scripts/dansk_db.py`.
 
 ## Your data
 
@@ -68,9 +56,7 @@ python scripts/import_fluent.py --data <your Fluent data folder> --words <your w
 python scripts/dansk_app.py
 ```
 
-A local web app on your database: what is due, your streak and last 14 days, flip-card review (keys 1 to 4), a word bank you can search, edit and prune, and your sessions. It listens on 127.0.0.1 only. "Hear it" uses your browser's Danish voice.
-
-No data yet? `--demo` serves a temporary copy of the invented example data.
+A local web app on your database: what is due, your streak and last 14 days, flip-card review (keys 1 to 4), a searchable word bank you can edit and prune, and your sessions. It listens on 127.0.0.1 only. "Hear it" uses your browser's Danish voice. No data yet? `--demo` serves a temporary copy of the invented example data.
 
 ![Overview](docs/screenshots/overview.png)
 ![Review](docs/screenshots/review.png)
