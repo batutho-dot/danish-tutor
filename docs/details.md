@@ -232,3 +232,11 @@ Child processes and the tests run without API credentials and with the voice dae
 ## Licence
 
 PolyForm Strict 1.0.0 (`LICENSE`, with the Required Notice line at the top): free for noncommercial use; no distributing it, and no changes or new works based on it; commercial use needs permission. Versions up to commit 9ba8b3f were released under MIT. Third-party code in `app/dist` keeps its own licences, in `app/dist/THIRD_PARTY_NOTICES.txt`.
+
+### Starting the voice daemon automatically
+
+Many local voice daemons exit after a while idle. Set `voice_daemon_start` in the settings file
+to the command that starts yours (a list of arguments, `~` allowed), for example
+`["python", "~/path/to/start-server.py"]`. The app then starts it when it opens, and `speak.py`
+starts it before speaking if it is not running, waiting up to 20 seconds for it to listen. A
+Danish model can need more time on its first sentence after a start.

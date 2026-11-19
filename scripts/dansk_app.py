@@ -351,7 +351,8 @@ class Api:
         now = time.monotonic()
         if fresh or self.voice_cache is None or now - self.voice_cache[0] > VOICE_TTL:
             setting = self.voice_setting()
-            if setting in ("auto", "local-daemon") and speak.daemon_up():
+            if setting in ("auto", "local-daemon") and (speak.daemon_up()
+                                                         or speak.daemon_start_command()):
                 v = "local"
             elif setting in ("auto", "system") and self.system_ok():
                 v = "system"
@@ -793,6 +794,10 @@ def main(argv: list[str] | None = None) -> int:
         print("  Ctrl+C stops it")
         if not a.no_browser:
             threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+        if speak.daemon_start_command() and not speak.daemon_up():
+            # Start the local voice daemon now, so the first reply does not wait for it.
+            print("  starting the local voice daemon")
+            threading.Thread(target=speak.ensure_daemon, daemon=True).start()
 
         def stop(*_):                       # SIGTERM, and Ctrl+Break on Windows: same as Ctrl+C
             raise KeyboardInterrupt

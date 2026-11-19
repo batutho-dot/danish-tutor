@@ -2,6 +2,8 @@
 port (CLV_PORT) on Windows, a temporary Unix socket (CLV_SOCKET) elsewhere. The real daemon
 and the real system voice are never used."""
 import contextlib
+import sys
+import unittest
 import io
 import json
 import os
@@ -133,3 +135,38 @@ class VoiceApi(ServerBase):
             self.assertEqual(status, 400, b)
         status, _ = self.request("POST", "/api/speak", {"text": "hej"}, token=False)
         self.assertEqual(status, 403)
+
+
+class DaemonAutoStart(unittest.TestCase):
+    """ensure_daemon starts the configured command when nothing listens, and waits for it."""
+
+    def test_starts_configured_command_and_waits(self):
+        import socket as _s, tempfile, json as _j, os as _o
+        port = _s.socket(); port.bind(("127.0.0.1", 0)); free = port.getsockname()[1]; port.close()
+        with tempfile.TemporaryDirectory() as tmp:
+            script = _o.path.join(tmp, "fake_daemon.py")
+            with open(script, "w", encoding="utf-8") as f:
+                f.write("import socket,time\n"
+                        "s=socket.socket(); s.bind(('127.0.0.1', %d)); s.listen()\n"
+                        "s.settimeout(6)\n"
+                        "try:\n    s.accept()\nexcept OSError:\n    pass\n" % free)
+            cfg = _o.path.join(tmp, "config.json")
+            with open(cfg, "w", encoding="utf-8") as f:
+                _j.dump({"voice_daemon_start": [sys.executable, script]}, f)
+            env = {"DANISH_TUTOR_CONFIG": cfg, "CLV_PORT": str(free)}
+            with mock.patch.dict(_o.environ, env):
+                if _o.name != "nt":
+                    self.skipTest("TCP daemon address is the Windows path")
+                self.assertFalse(speak.daemon_up())
+                self.assertTrue(speak.ensure_daemon(wait=8))
+
+    def test_no_command_means_no_start(self):
+        import tempfile, json as _j, os as _o
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _o.path.join(tmp, "config.json")
+            with open(cfg, "w", encoding="utf-8") as f:
+                _j.dump({}, f)
+            with mock.patch.dict(_o.environ, {"DANISH_TUTOR_CONFIG": cfg, "CLV_PORT": "1"}):
+                with mock.patch.object(speak.subprocess, "Popen") as popen:
+                    self.assertFalse(speak.ensure_daemon(wait=0.5))
+                    popen.assert_not_called()

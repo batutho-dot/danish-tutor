@@ -41,6 +41,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 PREFERRED_MAC_VOICE = "Sara (Enhanced)"
@@ -131,8 +132,52 @@ def daemon_up() -> bool:
         return False
 
 
+def daemon_start_command() -> list[str] | None:
+    """The `voice_daemon_start` setting: the command that starts the local voice daemon
+    (a list of arguments, or one string split on spaces). None when not set."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import dansk_db
+        cmd = dansk_db.load_config().get("voice_daemon_start")
+    except Exception:
+        return None
+    if isinstance(cmd, str) and cmd.strip():
+        return cmd.split()
+    if isinstance(cmd, list) and cmd and all(isinstance(c, str) for c in cmd):
+        return cmd
+    return None
+
+
+def ensure_daemon(wait: float = 20.0) -> bool:
+    """True if the daemon is up. If not, and `voice_daemon_start` is set, start it detached
+    and wait up to `wait` seconds for it to accept connections. Many local daemons exit
+    after a while idle, so the app calls this before speaking."""
+    if daemon_up():
+        return True
+    cmd = daemon_start_command()
+    if not cmd:
+        return False
+    cmd = [os.path.expanduser(c) for c in cmd]
+    kw: dict = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, close_fds=True)
+    if os.name == "nt":
+        kw["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kw["start_new_session"] = True
+    try:
+        subprocess.Popen(cmd, **kw)
+    except OSError:
+        return False
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        if daemon_up():
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def speak_daemon(text: str) -> bool:
-    return daemon_send({"runs": [{"lang": "da", "text": text}]})
+    return ensure_daemon() and daemon_send({"runs": [{"lang": "da", "text": text}]})
 
 
 def stop_daemon() -> bool:
@@ -231,7 +276,7 @@ def configured_voice() -> str:
 
 def available(voice: str = "auto") -> str:
     """Which voice would speak: "local", "system" or "none"."""
-    if voice in ("auto", "local-daemon") and daemon_up():
+    if voice in ("auto", "local-daemon") and (daemon_up() or daemon_start_command()):
         return "local"
     if voice in ("auto", "system") and system_voice_available():
         return "system"
