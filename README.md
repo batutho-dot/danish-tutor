@@ -1,5 +1,7 @@
 # danish-tutor
 
+<img src="docs/icon.png" alt="icon" width="120">
+
 A Claude Code plugin for spoken Danish practice: a 15 minute conversation, a hidden listening drill, and spaced repetition that remembers what you learned.
 For learners around A2 to B1 who want to speak and listen, not fill in drills.
 
@@ -19,7 +21,7 @@ The word order slip ("har ikke" should be "ikke har") is logged silently and com
 ## What you need
 
 - Claude Code
-- Python 3.10 or newer
+- Python 3.10+
 - A Danish text-to-speech voice for the listening drill
 - Dictation (optional; typing works)
 
