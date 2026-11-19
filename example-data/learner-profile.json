@@ -1,0 +1,18 @@
+{
+  "_note": "Invented example data for dansk-tutor. Not a real learner's record.",
+  "last_updated": "2026-11-04",
+  "learner": {
+    "current_level": "A2",
+    "target_level": "B2",
+    "native_language": "English"
+  },
+  "current_streak_days": 1,
+  "skills": {
+    "speaking": {
+      "total_practice_time": 12
+    },
+    "listening": {
+      "total_practice_time": 6
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "_note": "Invented example data for dansk-tutor. Not a real learner's record.",
+  "sessions": [
+    {
+      "session_id": "example-session-001",
+      "date": "2026-11-02",
+      "duration_minutes": 15,
+      "size": "large",
+      "skills_practiced": [
+        "speaking",
+        "listening",
+        "vocabulary"
+      ],
+      "accuracy": 0.6,
+      "notes": "Invented example. Topic: breakfast and shopping."
+    },
+    {
+      "session_id": "example-session-002",
+      "date": "2026-11-04",
+      "duration_minutes": 5,
+      "size": "small",
+      "skills_practiced": [
+        "speaking",
+        "listening",
+        "vocabulary"
+      ],
+      "accuracy": 0.5,
+      "notes": "Invented example. Short session. Topic: the weather."
+    }
+  ]
+}

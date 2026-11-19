@@ -1,0 +1,8 @@
+.env*
+*.key
+__pycache__/
+.venv/
+*.wav
+*.mp3
+*.ogg
+data/

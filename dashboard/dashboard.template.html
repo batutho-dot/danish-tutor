@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ordbank</title>
+<style>
+  :root {
+    --ground: #F2F0EA; --surface: #FBFAF7; --sunken: #EAE7DE;
+    --accent: #62795A; --accent-soft: #DFE7D4;
+    --ink: #1B211C; --ink-2: #454C46; --muted: #767D72;
+    --line: #DFDCD1; --warn: #A9713A; --warn-soft: #F2E5D4;
+    --r: 14px;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+    --serif: ui-serif, Georgia, "Times New Roman", serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #141815; --surface: #1C211D; --sunken: #232823;
+      --accent: #9DB78C; --accent-soft: #26302A;
+      --ink: #E7EAE3; --ink-2: #C3C9BE; --muted: #8F9789;
+      --line: #2C332D; --warn: #D2A06A; --warn-soft: #302719;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #141815; --surface: #1C211D; --sunken: #232823;
+    --accent: #9DB78C; --accent-soft: #26302A;
+    --ink: #E7EAE3; --ink-2: #C3C9BE; --muted: #8F9789;
+    --line: #2C332D; --warn: #D2A06A; --warn-soft: #302719;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font: 14px/1.5 var(--sans); }
+  main { max-width: 1040px; margin: 0 auto; padding: 28px 16px 48px; }
+  h1, h2, h3 { margin: 0; font-weight: 600; }
+  h1 { font-family: var(--serif); font-size: 28px; }
+  h2 { font-family: var(--serif); font-size: 20px; margin: 32px 0 12px; }
+  h3 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px; }
+  .top { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: flex-end; }
+  .top p { margin: 4px 0 0; color: var(--ink-2); }
+  .chip { display: inline-block; padding: 4px 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); margin-left: 6px; }
+  .chip.warn { background: var(--warn-soft); }
+  .banner { margin: 16px 0 0; padding: 10px 14px; border-radius: var(--r); background: var(--warn-soft); color: var(--ink); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 20px; }
+  .tile, .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; }
+  .tile .k { color: var(--muted); font-size: 12px; }
+  .tile .v { font-family: var(--serif); font-size: 30px; }
+  .tile .s { color: var(--ink-2); font-size: 12px; }
+  .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 12px; }
+  .bars { display: flex; gap: 4px; align-items: flex-end; height: 110px; }
+  .bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+  .stem { background: var(--accent); border-radius: 4px 4px 0 0; }
+  .stem.zero { background: var(--sunken); }
+  .lbl { font-size: 10px; color: var(--muted); text-align: center; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .row:last-child { border-bottom: 0; }
+  .muted { color: var(--muted); }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  input[type=search] { width: 100%; max-width: 360px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; margin-bottom: 10px; }
+  .words { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+  .word .head { font-family: var(--serif); font-size: 18px; }
+  .word .forms { color: var(--ink-2); font-size: 12px; }
+  .word .ex { font-style: italic; color: var(--ink-2); margin-top: 6px; }
+  .word .meta { margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .over { color: var(--warn); }
+  .tw { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 500; }
+  footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <div>
+      <h1>Ordbank</h1>
+      <p id="sub"></p>
+    </div>
+    <div><span class="chip" id="levelchip"></span><span class="chip" id="duechip"></span></div>
+  </header>
+  <div class="banner" id="exbanner" hidden>Invented example data. None of these words, sessions or numbers belong to a real learner.</div>
+
+  <div class="tiles" id="tiles"></div>
+  <div class="split">
+    <div class="panel"><h3>Minutes per day, last 14 days</h3><div class="bars" id="bars"></div></div>
+    <div class="panel"><h3>Next repetition</h3><div id="nextup"></div></div>
+    <div class="panel"><h3>Error patterns due</h3><div id="patterns"></div></div>
+  </div>
+
+  <h2>Word bank <span class="muted" id="wcount"></span></h2>
+  <input type="search" id="q" placeholder="Search Danish or gloss" autocomplete="off">
+  <div class="words" id="wordlist"></div>
+
+  <h2>Grammar <span class="muted" id="gcount"></span></h2>
+  <div class="words" id="gramlist"></div>
+
+  <h2>Sessions <span class="muted" id="scount"></span></h2>
+  <div class="panel tw" id="sessions"></div>
+
+  <footer>Built <span id="gen"></span> by dashboard/build_dashboard.py. Rebuild after each session.</footer>
+</main>
+
+<script>
+const DATA = /*__DATA__*/null;
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const all = (DATA && DATA.words) || [];
+const words = all.filter(w => w.kind === "word");
+const grams = all.filter(w => w.kind === "grammar");
+const stats = (DATA && DATA.stats) || {};
+const sessions = (DATA && DATA.sessions) || [];
+const patterns = (DATA && DATA.patterns) || [];
+
+$("#exbanner").hidden = !stats.example_data;
+$("#gen").textContent = stats.generated || "";
+$("#levelchip").textContent = stats.level ? ("Level " + stats.level + (stats.target ? " towards " + stats.target : "")) : "Level not set";
+const due = stats.due || 0;
+$("#duechip").textContent = due ? due + " due for review" : "Nothing due";
+if (due) $("#duechip").classList.add("warn");
+const gap = stats.gap_days;
+$("#sub").textContent = gap == null ? "No sessions yet."
+  : gap === 0 ? "Practised today."
+  : gap === 1 ? "Last session was yesterday."
+  : "Last session was " + gap + " days ago (" + stats.last_session + ").";
+
+const pct = stats.accuracy == null ? null : Math.round(stats.accuracy * 100);
+[
+  { k: "Words in the bank", v: stats.words, s: (stats.grammar || 0) + " grammar notes" },
+  { k: "Due for review", v: due, s: (stats.tracked || 0) + " tracked items" },
+  { k: "Minutes this week", v: stats.minutes_week, s: (stats.sessions || 0) + " sessions in total" },
+  { k: "Speaking and listening", v: (stats.speaking || 0) + (stats.listening || 0), s: pct == null ? "minutes in total" : "minutes, " + pct + "% correct" },
+  { k: "Streak", v: stats.streak, s: "days in a row" }
+].forEach(t => {
+  const d = document.createElement("div");
+  d.className = "tile";
+  d.innerHTML = "<div class='k'>" + esc(t.k) + "</div><div class='v'>" + esc(t.v == null ? 0 : t.v) + "</div><div class='s'>" + esc(t.s) + "</div>";
+  $("#tiles").appendChild(d);
+});
+
+const days = stats.days || [];
+const peak = Math.max(15, ...days.map(d => d.min));
+const DAYNAME = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+$("#bars").innerHTML = days.map(d => {
+  const h = d.min ? Math.max(4, Math.round(d.min / peak * 100)) : 3;
+  const wd = DAYNAME[new Date(d.date + "T12:00:00").getDay()];
+  return "<div class='bar' title='" + esc(d.date) + ", " + esc(d.min) + " min'><div class='stem" + (d.min ? "" : " zero") +
+    "' style='height:" + h + "%'></div><div class='lbl'>" + wd + "</div></div>";
+}).join("");
+
+const upcoming = all.filter(w => w.due).sort((a, b) => a.due < b.due ? -1 : 1).slice(0, 6);
+$("#nextup").innerHTML = upcoming.length
+  ? upcoming.map(w => "<div class='row'><span>" + esc(w.head) + "</span><span class='" + (w.overdue ? "over" : "muted") + "'>" +
+      (w.overdue ? "due " : "") + esc(w.due) + "</span></div>").join("")
+  : "<div class='muted'>Nothing scheduled yet.</div>";
+
+$("#patterns").innerHTML = patterns.length
+  ? patterns.map(p => "<div class='row'><span><s class='muted'>" + esc(p.wrong) + "</s> " + esc(p.right) + "</span><span class='muted'>" + esc(p.cat) + "</span></div>").join("")
+  : "<div class='muted'>No error patterns due.</div>";
+
+function card(w) {
+  const meta = [w.pos, w.gender, w.level].filter(Boolean).join(", ");
+  const sched = w.due ? (w.overdue ? "<span class='over'>due " + esc(w.due) + "</span>" : "next " + esc(w.due)) : "not scheduled";
+  return "<div class='panel word'><div class='head'>" + esc(w.head) + "</div>" +
+    (w.forms ? "<div class='forms'>" + esc(w.forms) + "</div>" : "") +
+    (w.gloss ? "<div>" + esc(w.gloss) + "</div>" : "") +
+    (w.da ? "<div class='muted'>" + esc(w.da) + "</div>" : "") +
+    (w.ex && w.ex.length ? "<div class='ex'>" + esc(w.ex[0]) + "</div>" : "") +
+    "<div class='meta'>" + esc(meta) + (meta ? " · " : "") + "mastery " + esc(w.mastery || 0) + ", " + sched + "</div></div>";
+}
+function renderWords() {
+  const q = $("#q").value.trim().toLowerCase();
+  const hit = w => !q || [w.head, w.forms, w.gloss, w.da].join(" ").toLowerCase().includes(q);
+  const list = words.filter(hit);
+  $("#wordlist").innerHTML = list.map(card).join("") || "<div class='muted'>No words match.</div>";
+  $("#wcount").textContent = list.length + " of " + words.length;
+}
+$("#q").addEventListener("input", renderWords);
+renderWords();
+$("#gramlist").innerHTML = grams.map(card).join("") || "<div class='muted'>No grammar notes yet.</div>";
+$("#gcount").textContent = grams.length;
+
+$("#scount").textContent = sessions.length;
+$("#sessions").innerHTML = sessions.length
+  ? "<table><thead><tr><th>Date</th><th>Minutes</th><th>Size</th><th>Skills</th><th>Accuracy</th><th>Notes</th></tr></thead><tbody>" +
+    sessions.map(s => "<tr><td class='mono'>" + esc(s.date) + "</td><td>" + esc(s.min) + "</td><td>" + esc(s.size) + "</td><td>" +
+      esc((s.skills || []).join(", ")) + "</td><td>" + (s.acc == null ? "" : esc(Math.round(s.acc * 100) + "%")) + "</td><td>" + esc(s.notes) + "</td></tr>").join("") +
+    "</tbody></table>"
+  : "<div class='muted'>No sessions logged yet.</div>";
+</script>
+</body>
+</html>
