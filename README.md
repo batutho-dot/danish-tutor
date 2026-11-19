@@ -2,74 +2,68 @@
 
 <img src="docs/icon.png" alt="icon" width="120">
 
-A Claude Code plugin for spoken Danish practice: a 15 minute conversation, a hidden listening drill, and spaced repetition. For learners around A2 to B1 who want to speak and listen, not fill in drills.
+Spoken Danish practice in a local web app: a relaxed chat with small corrections as you go, a hidden listening drill, ten new words at a time, and spaced repetition. For learners around A2 to B1. It installs as a Claude Code plugin; the tutor runs on the Anthropic API.
 
-From the invented example session (English in brackets):
+From the invented example data:
 
 ```
-Tutor:   Hej! Hvad har du lyst til at tale om i dag?   (Hi! What would you like to talk about today?)
-Learner: Morgenmad og at købe ind.                     (Breakfast and shopping.)
-Tutor:   Hvad spiser du til morgenmad?                 (What do you eat for breakfast?)
-Learner: Brød, men ikke i dag, fordi jeg har ikke tid. (Bread, but not today, because I don't have time.)
+Tutor:   Hej! Hvad har du lyst til at snakke om i dag?
+Learner: Jeg spiser ikke morgenmad, fordi jeg har ikke tid.
+         Small fix: fordi jeg har ikke tid > fordi jeg ikke har tid
 ```
 
-The word order slip ("har ikke" should be "ikke har") is logged silently and comes back in the debrief and later sessions.
+The fix becomes an error card for review.
 
-## Install
+## What you need
 
-You need Claude Code, Python 3.10+ and a Danish text-to-speech voice for the listening drill. Dictation is optional; typing works. In Claude Code:
+- **Python 3.10+.** On Windows, tick "Add python.exe to PATH" in the installer.
+- **The Anthropic SDK:** `pip install anthropic`. Without it, only Practice is unavailable.
+- **An Anthropic API key** from console.anthropic.com, in the environment variable `DANISH_TUTOR_ANTHROPIC_KEY` (or `ANTHROPIC_API_KEY`, or sign in with `ant auth login`). The app never asks for it, stores it or shows it.
+- **A Danish voice** for listening: a system voice (Windows: Settings > Time & language > Language & region, add Danish with speech; macOS: System Settings > Accessibility > Spoken Content), or optionally a local text-to-speech daemon (`docs/details.md`).
+- **Edge or Chrome** for the Talk button. Typing or any dictation tool works too.
+
+Node is not needed. Claude Code is only needed to install the plugin.
+
+## Install and start
+
+In Claude Code:
 
 ```
 /plugin marketplace add batutho-dot/danish-tutor
 /plugin install danish-tutor@danish-tutor
 ```
 
-Then type `/dansk` (`/dansk kort` for 5 minutes, `/dansk lyt` for listening only).
+Then type `/dansk`; it starts the app. Without Claude Code: `python scripts/dansk_app.py` (add `--demo` to try it on invented data).
 
-Optional settings (level, goal, support language, voice speed): copy `skills/dansk/config.example.json` to `~/.claude/danish-tutor/config.json`.
+Optional settings: copy `skills/dansk/config.example.json` to `~/.claude/danish-tutor/config.json`.
 
-## How it works
+## The app
 
-```mermaid
-flowchart LR
-  A[dansk_db.py due: due items and error patterns] --> B[Learner picks a topic]
-  B --> C[Conversation in Danish, errors logged silently]
-  C --> D[Hidden listening drill, speak.py]
-  D --> E[Debrief in the support language]
-  E --> F[One dansk_db.py record call into SQLite]
-  F --> G[Optional: open the app]
-```
+- **Practice:** Speaking (15 minutes), Short chat (5), Listening drill, Learn 10 new words. Talk or type. Replies are read aloud; switch off "Show tutor text" to practise by ear. The session is saved at the end.
+- **Review:** due cards, oldest first. Error cards show the mistake, where it came up, what you said and the correct form. Again and Hard come back at the end. "Fix this card" edits or deletes a card.
+- **Overview, Word bank, Sessions:** what is due, your streak, your words, past sessions.
 
-Due items are woven into a conversation on your topic. Corrections wait until the debrief. Listening sentences are spoken, never shown first. One `record` call saves everything in one transaction and prints a line like `saved session-2026-11-02, 6 reviews, 3 new words, 1 errors; 9 items due tomorrow`. Scheduling is SM-2 (Wozniak 1990), in `scripts/dansk_db.py`.
+![Review](docs/screenshots/review.png)
+![Practice](docs/screenshots/practice.png)
 
-## Your data
+Scheduling is SM-2 (Wozniak 1990), in `scripts/dansk_db.py`.
 
-One SQLite file, `~/.claude/danish-tutor/dansk.db`, on your machine only. Coming from the Fluent plugin? Import once:
+## Your data and privacy
+
+Your record is one SQLite file, `~/.claude/danish-tutor/dansk.db`, created on first start. The conversation text goes to the Anthropic API under your key. The Talk button uses your browser's speech recognition, which may send audio to the browser maker. The app listens on 127.0.0.1 only.
+
+Coming from the Fluent plugin? Import once:
 
 ```bash
 python scripts/import_fluent.py --data <your Fluent data folder> --words <your word notes folder>
 ```
 
-## The app
-
-```bash
-python scripts/dansk_app.py
-```
-
-A local web app on your database: what is due, your streak and last 14 days, flip-card review (keys 1 to 4), a searchable word bank you can edit and prune, and your sessions. It listens on 127.0.0.1 only. "Hear it" uses your browser's Danish voice. No data yet? `--demo` serves a temporary copy of the invented example data.
-
-![Overview](docs/screenshots/overview.png)
-![Review](docs/screenshots/review.png)
-
-`dashboard/build_dashboard.py` still writes a static export.
-
 ## Limits
 
-- The Danish the model produces is not checked against a dictionary.
-- The listening drill needs an installed Danish voice; Windows and macOS do not always ship one.
-- SQLite only; the SQL is kept portable.
+- The tutor's Danish is not checked against a dictionary.
+- Listening needs a Danish voice; Windows and macOS do not always ship one.
 - No claim about learning gains is made.
 
 ## Licence
 
-PolyForm Strict 1.0.0 (`LICENSE`): free for noncommercial use; no distributing it, and no changes or new works based on it; commercial use needs permission. Versions up to commit 9ba8b3f were released under MIT. Bundled third-party code in `app/dist` keeps its own licences (see `THIRD_PARTY_NOTICES.txt` there). `example-data/` is invented. More: [docs/details.md](docs/details.md).
+PolyForm Strict 1.0.0 (`LICENSE`): free for noncommercial use; no distributing it, and no changes or new works based on it; commercial use needs permission. Versions up to commit 9ba8b3f were released under MIT. Bundled third-party code in `app/dist` keeps its own licences (`THIRD_PARTY_NOTICES.txt` there). `example-data/` is invented. More: [docs/details.md](docs/details.md).

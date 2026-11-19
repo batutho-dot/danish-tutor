@@ -26,27 +26,30 @@ import {
   BookOpenIcon,
   CalendarDaysIcon,
   ChatBubbleLeftRightIcon,
+  MicrophoneIcon,
   Squares2X2Icon,
 } from '@heroicons/react/24/outline';
 import {
   AcademicCapIcon as AcademicCapSolid,
   BookOpenIcon as BookOpenSolid,
   CalendarDaysIcon as CalendarDaysSolid,
+  MicrophoneIcon as MicrophoneSolid,
   Squares2X2Icon as Squares2X2Solid,
 } from '@heroicons/react/24/solid';
 import {appTheme} from './theme';
-import {api} from './api';
+import {DATA_CHANGED, api} from './api';
 import Overview from './pages/Overview';
 import Review from './pages/Review';
 import WordBank from './pages/WordBank';
 import Sessions from './pages/Sessions';
+import Practice from './pages/Practice';
 
-type Route = 'overview' | 'review' | 'words' | 'sessions';
+type Route = 'overview' | 'practice' | 'review' | 'words' | 'sessions';
 type Mode = 'light' | 'dark' | 'system';
 
 function readRoute(): Route {
   const h = window.location.hash.replace(/^#\/?/, '').split('/')[0];
-  return h === 'review' || h === 'words' || h === 'sessions' ? h : 'overview';
+  return h === 'practice' || h === 'review' || h === 'words' || h === 'sessions' ? h : 'overview';
 }
 
 function readMode(): Mode {
@@ -73,6 +76,19 @@ export default function App() {
     demo: false,
     today: '',
   });
+
+  // Overview, Word bank and Sessions refetch when the window gets focus again or a practice
+  // session saved (a new key remounts them); they also load fresh on every route change.
+  const [dataKey, setDataKey] = useState(0);
+  useEffect(() => {
+    const bump = () => setDataKey(k => k + 1);
+    window.addEventListener('focus', bump);
+    window.addEventListener(DATA_CHANGED, bump);
+    return () => {
+      window.removeEventListener('focus', bump);
+      window.removeEventListener(DATA_CHANGED, bump);
+    };
+  }, []);
 
   useEffect(() => {
     const onHash = () => setRoute(readRoute());
@@ -125,6 +141,13 @@ export default function App() {
           isSelected={route === 'overview'}
         />
         <SideNavItem
+          label="Practice"
+          icon={MicrophoneIcon}
+          selectedIcon={MicrophoneSolid}
+          href="#/practice"
+          isSelected={route === 'practice'}
+        />
+        <SideNavItem
           label="Review"
           icon={AcademicCapIcon}
           selectedIcon={AcademicCapSolid}
@@ -170,10 +193,11 @@ export default function App() {
             />
           ) : undefined
         }>
-        {route === 'overview' && <Overview />}
+        {route === 'overview' && <Overview key={dataKey} />}
+        {route === 'practice' && <Practice />}
         {route === 'review' && <Review />}
-        {route === 'words' && <WordBank />}
-        {route === 'sessions' && <Sessions />}
+        {route === 'words' && <WordBank key={dataKey} />}
+        {route === 'sessions' && <Sessions key={dataKey} />}
       </AppShell>
     </Theme>
   );

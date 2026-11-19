@@ -40,7 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dansk_text  # noqa: E402
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 EF_START = 2.5
 EF_FLOOR = 1.3
 
@@ -152,7 +152,8 @@ SCHEMA = [
         due_date TEXT,
         last_reviewed TEXT,
         total_reviews INTEGER NOT NULL,
-        mastery_level INTEGER NOT NULL)""",
+        mastery_level INTEGER NOT NULL,
+        description TEXT, context TEXT, noted TEXT)""",
     """CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
         date TEXT NOT NULL,
@@ -190,9 +191,34 @@ def connect(path: Path) -> sqlite3.Connection:
     with con:
         for stmt in SCHEMA:
             con.execute(stmt)
-        if get_meta(con, "schema_version") is None:
-            set_meta(con, "schema_version", SCHEMA_VERSION)
+        migrate(con)
     return con
+
+
+# Columns added after schema version 1, per table: (name, type).
+ADDED_COLUMNS = {"items": [("description", "TEXT"), ("context", "TEXT"), ("noted", "TEXT")]}
+
+
+def migrate(con) -> None:
+    """Bring an older database up to SCHEMA_VERSION. Caller owns the transaction.
+
+    Version 2 adds items.description (what the mistake is about, in words), items.context
+    (where it came up) and items.noted (YYYY-MM-DD the mistake was last seen), used by error
+    cards. Existing rows keep NULL there."""
+    for table, cols in ADDED_COLUMNS.items():
+        have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+        for name, typ in cols:
+            if name not in have:
+                try:
+                    con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
+                except sqlite3.OperationalError as e:
+                    # Two connections opened at once (the app fetches in parallel) can
+                    # both see the old schema; the second ALTER then finds the column
+                    # already there. That is the state we wanted.
+                    if "duplicate column name" not in str(e):
+                        raise
+    if get_meta(con, "schema_version") != SCHEMA_VERSION:
+        set_meta(con, "schema_version", SCHEMA_VERSION)
 
 
 def open_existing(path: Path) -> sqlite3.Connection | None:
@@ -262,12 +288,14 @@ def insert_item(con, it: dict):
     con.execute(
         "INSERT INTO items (id, kind, content, answer, category, difficulty, word_id,"
         " easiness_factor, interval_days, repetitions, due_date, last_reviewed, total_reviews,"
-        " mastery_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " mastery_level, description, context, noted)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (it["id"], it["kind"], it.get("content"), it.get("answer"), it.get("category"),
          it.get("difficulty"), it.get("word_id"),
          float(it.get("easiness_factor") or EF_START), int(it.get("interval_days") or 0), reps,
          it.get("due_date"), it.get("last_reviewed"), int(it.get("total_reviews") or 0),
-         int(it["mastery_level"]) if it.get("mastery_level") is not None else mastery(reps)))
+         int(it["mastery_level"]) if it.get("mastery_level") is not None else mastery(reps),
+         it.get("description"), it.get("context"), it.get("noted")))
 
 
 def update_schedule(con, item_id, ef, interval, reps, due, last_reviewed, reviewed: bool):
@@ -453,11 +481,40 @@ def delete_word(con, word_id: int) -> dict:
     return {"words": n_w, "items": n_items, "examples": n_ex, "reviews": n_rev}
 
 
+ITEM_EDIT_FIELDS = ("content", "answer", "description", "context", "category")
+
+
+def update_item(con, item_id: str, fields: dict) -> None:
+    """Change what a review card shows (not its schedule). Caller owns the transaction."""
+    fields = {k: v for k, v in fields.items() if k in ITEM_EDIT_FIELDS}
+    for k, v in fields.items():
+        con.execute(f"UPDATE items SET {k} = ? WHERE id = ?", (v, item_id))
+
+
+def delete_item(con, item_id: str) -> dict:
+    """Delete one item and its reviews; a linked word stays. Caller owns the transaction."""
+    n_rev = con.execute("DELETE FROM reviews WHERE item_id = ?", (item_id,)).rowcount
+    n_items = con.execute("DELETE FROM items WHERE id = ?", (item_id,)).rowcount
+    return {"items": n_items, "reviews": n_rev}
+
+
+def error_pairs(said, correct) -> list[list[str]]:
+    """What was said and the correct form, as [said, correct] pairs. Older logs sometimes
+    glued two mistakes together with " / "; split both sides only when both give the same
+    number of parts, otherwise keep one pair as it is."""
+    said, correct = (said or "").strip(), (correct or "").strip()
+    a, b = said.split(" / "), correct.split(" / ")
+    if len(a) > 1 and len(a) == len(b):
+        return [[x.strip(), y.strip()] for x, y in zip(a, b)]
+    return [[said, correct]]
+
+
 def due_cards(con, today: str) -> list[dict]:
     """Every item due on or before today, oldest first, with what a review card shows."""
     rows = con.execute(
         "SELECT i.id AS item_id, i.kind, i.content, i.answer, i.category, i.due_date,"
-        " i.mastery_level, i.total_reviews, i.interval_days, i.word_id, w.headword, w.forms,"
+        " i.mastery_level, i.total_reviews, i.interval_days, i.repetitions, i.word_id,"
+        " i.description, i.context AS item_context, i.noted, w.headword, w.forms,"
         " w.definition, w.gloss, w.pos, w.gender, w.level"
         " FROM items i LEFT JOIN words w ON w.id = i.word_id"
         " WHERE i.due_date IS NOT NULL AND i.due_date <= ? ORDER BY i.due_date, i.id",
@@ -468,10 +525,17 @@ def due_cards(con, today: str) -> list[dict]:
         d["examples"] = [e["sentence"] for e in word_examples(con, d["word_id"])] if d["word_id"] else []
         if d["kind"] == "error_pattern":
             pid = d["item_id"][len("error_"):] if d["item_id"].startswith("error_") else d["item_id"]
-            e = con.execute("SELECT context, severity FROM errors WHERE pattern_id IN (?, ?)"
-                            " ORDER BY id DESC LIMIT 1", (pid, d["item_id"])).fetchone()
-            d["context"] = e["context"] if e else None
+            e = con.execute("SELECT e.context, e.severity, s.date FROM errors e"
+                            " LEFT JOIN sessions s ON s.id = e.session_id"
+                            " WHERE e.pattern_id IN (?, ?) ORDER BY e.id DESC LIMIT 1",
+                            (pid, d["item_id"])).fetchone()
+            d["context"] = d["item_context"] or (e["context"] if e else None)
             d["severity"] = e["severity"] if e else None
+            d["mistake_date"] = d["noted"] or (e["date"] if e else None)
+            d["pairs"] = error_pairs(d["content"], d["answer"])
+        else:
+            d["context"] = None
+        del d["item_context"]
         out.append(d)
     return out
 
@@ -757,9 +821,12 @@ def apply_record(con, p: dict, cfg: dict) -> dict:
         if it is None:
             insert_item(con, {"id": iid, "kind": "error_pattern", "content": e["said"],
                               "answer": e["correct"], "category": e.get("category"),
-                              "due_date": tomorrow})
+                              "due_date": tomorrow, "context": e.get("context") or None,
+                              "noted": day})
         else:
             update_schedule(con, iid, it["easiness_factor"], 1, 0, tomorrow, None, False)
+            con.execute("UPDATE items SET noted = ?, context = COALESCE(?, context) WHERE id = ?",
+                        (day, e.get("context") or None, iid))
 
     for li in p.get("listening", []):
         insert_listening(con, sid, li)
@@ -816,19 +883,22 @@ def cmd_init(a, cfg) -> int:
     return 0
 
 
+def due_report(con, today: str, limit: int | None = None) -> dict:
+    """What `due --json` prints (without the database path); con may be None (no database)."""
+    if con is None:
+        return {"today": today, "first_session": True, "due_count": 0, "due_items": [],
+                "error_patterns": [], "learner": {}}
+    return {"today": today, "first_session": counts(con)["sessions"] == 0,
+            "due_count": count_due(con, today), "due_items": due_items(con, today, limit),
+            "error_patterns": top_error_patterns(con), "learner": get_learner(con)}
+
+
 def cmd_due(a, cfg) -> int:
     path = db_path(a.db, cfg)
     today = _today(a)
     con = open_existing(path)
-    if con is None:
-        out = {"today": today, "first_session": True, "due_count": 0, "due_items": [],
-               "error_patterns": [], "learner": {}, "database": str(path)}
-    else:
-        out = {"today": today, "first_session": counts(con)["sessions"] == 0,
-               "due_count": count_due(con, today),
-               "due_items": due_items(con, today, a.limit),
-               "error_patterns": top_error_patterns(con), "learner": get_learner(con),
-               "database": str(path)}
+    out = {**due_report(con, today, a.limit), "database": str(path)}
+    if con is not None:
         con.close()
     if a.json:
         print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -879,6 +949,39 @@ def cmd_stats(a, cfg) -> int:
     return 0
 
 
+def record_payload(path: Path, p, cfg: dict) -> tuple[int, list[str]]:
+    """Validate and save one payload, as `record` does. Returns (exit code, output lines):
+    0 saved (first line is the saved line), 1 invalid payload, 2 database or I/O error; on
+    1 and 2 nothing was written. Shared by the command line and the app."""
+    try:
+        con = connect(path)
+    except (sqlite3.Error, OSError) as e:
+        return 2, [f"not saved: cannot open database {path}: {e}"]
+    try:
+        errs = validate(p, item_ids(con))
+        if errs:
+            return 1, ["not saved: invalid payload"] + [f"  {e}" for e in errs]
+        try:
+            with con:                       # one transaction: commit on success, else roll back
+                result = apply_record(con, p, cfg)
+        except (sqlite3.Error, OSError, ValueError) as e:
+            return 2, [f"not saved: database error, nothing written: {e}"]
+    finally:
+        con.close()
+
+    lines = [f"saved {result['session_id']}, {result['reviews']} reviews, "
+             f"{result['new_words']} new words, {result['errors']} errors; "
+             f"{result['due_tomorrow']} items due tomorrow"]
+    notes = str(cfg.get("notes_dir") or "").strip()
+    if notes:
+        try:
+            files = write_notes(Path(notes).expanduser(), p, result)
+            lines.append(f"notes: {len(files)} files written under {Path(notes).expanduser()}")
+        except OSError as e:
+            lines.append(f"warning: database saved, but notes not written: {e}")
+    return 0, lines
+
+
 def cmd_record(a, cfg) -> int:
     try:
         raw = Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.read()
@@ -890,39 +993,10 @@ def cmd_record(a, cfg) -> int:
     except json.JSONDecodeError as e:
         print(f"not saved: payload is not valid JSON: {e}")
         return 1
-    path = db_path(a.db, cfg)
-    try:
-        con = connect(path)
-    except (sqlite3.Error, OSError) as e:
-        print(f"not saved: cannot open database {path}: {e}")
-        return 2
-    try:
-        errs = validate(p, item_ids(con))
-        if errs:
-            print("not saved: invalid payload")
-            for e in errs:
-                print(f"  {e}")
-            return 1
-        try:
-            with con:                       # one transaction: commit on success, else roll back
-                result = apply_record(con, p, cfg)
-        except (sqlite3.Error, OSError, ValueError) as e:
-            print(f"not saved: database error, nothing written: {e}")
-            return 2
-    finally:
-        con.close()
-
-    print(f"saved {result['session_id']}, {result['reviews']} reviews, "
-          f"{result['new_words']} new words, {result['errors']} errors; "
-          f"{result['due_tomorrow']} items due tomorrow")
-    notes = str(cfg.get("notes_dir") or "").strip()
-    if notes:
-        try:
-            files = write_notes(Path(notes).expanduser(), p, result)
-            print(f"notes: {len(files)} files written under {Path(notes).expanduser()}")
-        except OSError as e:
-            print(f"warning: database saved, but notes not written: {e}")
-    return 0
+    code, lines = record_payload(db_path(a.db, cfg), p, cfg)
+    for line in lines:
+        print(line)
+    return code
 
 
 def main(argv: list[str] | None = None) -> int:

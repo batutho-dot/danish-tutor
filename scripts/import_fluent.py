@@ -10,6 +10,9 @@ Reads from DIR, each file optional:
                            error_pattern; schedule fields copied when present
   session-log.json         sessions
   learner-profile.json     learner level, target level, native language
+  mistakes-db.json         error patterns: a pattern's description and its latest example's
+                           context and date go onto the matching error item (id, or
+                           error_<id>); unknown keys are ignored, missing ones skipped
 Word notes (--words, default DIR/words when that folder exists) are parsed the same way the
 dashboard parses them.
 
@@ -52,9 +55,52 @@ def iter_items(sr: dict):
                 yield None, it
 
 
+def _text(v) -> str | None:
+    return v.strip() if isinstance(v, str) and v.strip() else None
+
+
+def iter_patterns(mdb: dict):
+    pats = mdb.get("error_patterns") or {}
+    if isinstance(pats, dict):
+        for key, pat in pats.items():
+            if isinstance(pat, dict):
+                yield str(key), pat
+    elif isinstance(pats, list):
+        for pat in pats:
+            if isinstance(pat, dict) and (pat.get("id") or pat.get("pattern_id")):
+                yield str(pat.get("id") or pat.get("pattern_id")), pat
+
+
+def import_mistakes(con, mdb: dict) -> int:
+    """Fluent's mistakes-db.json: {"error_patterns": {<id>: {"description", "examples":
+    [{"incorrect", "correct", "context", "date"}], ...}}}. Adds the description and the latest
+    example's context and date to the matching error item (id as given, or error_<id>), only
+    where those fields are still empty, so a rerun or an edit in the app is never overwritten.
+    An item with no content or answer gets the latest example's wording. No item is created.
+    Returns how many items gained something."""
+    n = 0
+    for key, pat in iter_patterns(mdb):
+        it = dansk_db.get_item(con, key) or dansk_db.get_item(con, dansk_db.error_item_id(key))
+        if it is None:
+            continue
+        examples = [e for e in pat.get("examples") or [] if isinstance(e, dict)]
+        latest = max(examples, key=lambda e: str(e.get("date") or ""), default={})
+        day = str(latest.get("date") or pat.get("last_occurred") or pat.get("last_seen") or "")[:10]
+        new = {"description": _text(pat.get("description")), "context": _text(latest.get("context")),
+               "noted": day if dansk_db.is_date(day) else None,
+               "content": _text(latest.get("incorrect")), "answer": _text(latest.get("correct"))}
+        fields = {k: v for k, v in new.items() if v and not it[k]}
+        if fields:
+            for k, v in fields.items():
+                con.execute(f"UPDATE items SET {k} = ? WHERE id = ?", (v, it["id"]))
+            n += 1
+    return n
+
+
 def import_all(con, data_dir: Path, words_dir: Path | None) -> dict:
     """Import into an open connection. Caller owns the transaction. Returns counts added."""
-    added = {"words": 0, "examples": 0, "items": 0, "sessions": 0, "skipped_items": 0}
+    added = {"words": 0, "examples": 0, "items": 0, "sessions": 0, "skipped_items": 0,
+             "error_notes": 0}
 
     sr = load_json(data_dir, "spaced-repetition.json")
     profile = load_json(data_dir, "learner-profile.json")
@@ -109,6 +155,8 @@ def import_all(con, data_dir: Path, words_dir: Path | None) -> dict:
             "last_reviewed": it.get("last_reviewed"), "total_reviews": it.get("total_reviews"),
             "mastery_level": it.get("mastery_level")})
         added["items"] += 1
+
+    added["error_notes"] = import_mistakes(con, load_json(data_dir, "mistakes-db.json"))
 
     for s in log.get("sessions") or []:
         if not isinstance(s, dict):
@@ -165,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(f"imported into {path}")
     print(f"  added {added['words']} words, {added['examples']} examples, {added['items']} items, "
-          f"{added['sessions']} sessions" +
+          f"{added['sessions']} sessions, notes on {added['error_notes']} error items" +
           (f"; skipped {added['skipped_items']} items without id or known type"
            if added["skipped_items"] else ""))
     print(f"  database now holds {c['words']} words, {c['grammar']} grammar notes, "

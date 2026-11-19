@@ -445,7 +445,7 @@ export default function WordBank() {
             ) : rows && rows.length === 0 ? (
               <EmptyState
                 title={filtered ? 'No matching words' : 'No words yet'}
-                description={filtered ? 'Nothing matches the current search and filters.' : 'Words appear here after a /dansk session or an import.'}
+                description={filtered ? 'Nothing matches the current search and filters.' : 'Words appear here after a practice session or an import.'}
                 actions={filtered ? <Button label="Clear filters" onClick={clearAll} /> : undefined}
               />
             ) : (

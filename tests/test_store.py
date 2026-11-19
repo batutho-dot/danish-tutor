@@ -223,3 +223,31 @@ class Store(helpers.TempCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Migration(helpers.TempCase):
+    def test_v1_database_upgrades_even_when_two_connections_race(self):
+        """A version 1 items table upgrades, and a second connection that still saw the
+        old schema does not fail on the duplicate column (the app fetches in parallel)."""
+        con = sqlite3.connect(str(self.db))
+        con.execute("CREATE TABLE items (id TEXT PRIMARY KEY, kind TEXT, content TEXT)")
+        con.commit()
+        con.close()
+        dansk_db.connect(self.db).close()                 # first connection upgrades
+        stale = sqlite3.connect(str(self.db))
+        stale.row_factory = sqlite3.Row
+        try:
+            old = [{"name": "id"}, {"name": "kind"}, {"name": "content"}]
+            real_execute = stale.execute
+
+            class StaleView:                              # PRAGMA answers as before the upgrade
+                row_factory = sqlite3.Row
+                def execute(self, sql, *a):
+                    return iter(old) if sql.startswith("PRAGMA table_info") else real_execute(sql, *a)
+
+            with stale:
+                dansk_db.migrate(StaleView())            # must not raise
+            cols = {r["name"] for r in stale.execute("PRAGMA table_info(items)")}
+        finally:
+            stale.close()
+        self.assertTrue({"description", "context", "noted"} <= cols)

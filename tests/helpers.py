@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import socket
 import sys
 import tempfile
 import unittest
@@ -26,8 +27,14 @@ class TempCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
         self._env = {k: os.environ.get(k) for k in
-                     ("DANISH_TUTOR_CONFIG", "DANISH_TUTOR_DB", "DANSK_DATA_DIR", "DANSK_WORDS_DIR")}
+                     ("DANISH_TUTOR_CONFIG", "DANISH_TUTOR_DB", "DANSK_DATA_DIR", "DANSK_WORDS_DIR",
+                      "DANISH_TUTOR_BACKEND", "CLV_PORT", "CLV_SOCKET", "CLV_HOME")}
         os.environ["DANISH_TUTOR_CONFIG"] = str(self.tmp / "config.json")
+        # Never reach a real voice daemon: point it at a port and socket nothing listens on.
+        os.environ["CLV_PORT"] = str(free_port())
+        os.environ["CLV_SOCKET"] = str(self.tmp / "no-daemon.sock")
+        os.environ["CLV_HOME"] = str(self.tmp / "clv")
+        os.environ.pop("DANISH_TUTOR_BACKEND", None)
         os.environ["DANISH_TUTOR_DB"] = str(self.tmp / "default.db")
         os.environ.pop("DANSK_DATA_DIR", None)
         os.environ.pop("DANSK_WORDS_DIR", None)
@@ -40,6 +47,13 @@ class TempCase(unittest.TestCase):
             else:
                 os.environ[k] = v
         self._tmp.cleanup()
+
+
+def free_port() -> int:
+    """A TCP port on 127.0.0.1 that was free a moment ago."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def run_main(main, argv) -> tuple[int, str]:

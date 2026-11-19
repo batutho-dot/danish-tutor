@@ -212,14 +212,14 @@ export default function Sessions() {
                 <Text color="secondary">{rows ? `${rows.length} recorded` : ''}</Text>
               </HStack>
               <Text color="secondary">
-                Conversation sessions from /dansk, and one app-review row per day you review cards here.
+                Practice sessions, and one app-review row per day you review cards here.
               </Text>
             </VStack>
             {error && <Banner status="error" title="Could not load sessions" description={error} />}
             {rows === null && !error ? (
               <Spinner label="Loading" />
             ) : rows && rows.length === 0 ? (
-              <EmptyState title="No sessions yet" description="Run /dansk in Claude Code to record your first one." />
+              <EmptyState title="No sessions yet" description="Start one on the Practice page." />
             ) : (
               <Table<SessionRow>
                 data={sortedData}

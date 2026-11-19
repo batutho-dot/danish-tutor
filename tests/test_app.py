@@ -13,9 +13,15 @@ import import_fluent
 TODAY = "2026-11-06"
 
 
-class AppServer(helpers.TempCase):
+class ServerBase(helpers.TempCase):
+    """A server on a temp copy of example-data; no tests of its own."""
+    def before_server(self):
+        """Hook for subclasses: runs after the temp folder and env are set, before the
+        server (and its tutor backend) is made."""
+
     def setUp(self):
         super().setUp()
+        self.before_server()
         code, out = helpers.run_main(import_fluent.main, ["--data", str(helpers.EXAMPLE),
                                                           "--db", str(self.db)])
         self.assertEqual(code, 0, out)
@@ -60,6 +66,9 @@ class AppServer(helpers.TempCase):
         finally:
             con.close()
 
+
+
+class AppServer(ServerBase):
     # ---- security
 
     def test_no_token_is_403(self):

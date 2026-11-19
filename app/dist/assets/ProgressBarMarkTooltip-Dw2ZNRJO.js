@@ -1,1 +1,0 @@
-import{l as e}from"./index-CWFaOU9r.js";import{y as t}from"./coarsePointer-CGExmTa9.js";var n=t();function r({content:t,children:r}){return(0,n.jsx)(e,{content:t,placement:`above`,focusTrigger:`always`,children:r})}export{r as default};

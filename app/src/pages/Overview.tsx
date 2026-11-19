@@ -17,7 +17,14 @@ import type {TableColumn} from '@astryxdesign/core/Table';
 import {Divider} from '@astryxdesign/core/Divider';
 import {Link} from '@astryxdesign/core/Link';
 import {Icon} from '@astryxdesign/core/Icon';
-import {AcademicCapIcon} from '@heroicons/react/24/outline';
+import {
+  AcademicCapIcon,
+  BookOpenIcon,
+  ChatBubbleLeftRightIcon,
+  ClockIcon,
+  SpeakerWaveIcon,
+} from '@heroicons/react/24/outline';
+import {ClickableCard} from '@astryxdesign/core/ClickableCard';
 import {api, fmtDate} from '../api';
 import type {PatternItem, SessionRow, Summary} from '../api';
 
@@ -167,6 +174,13 @@ function TableCard<T extends Record<string, unknown>>({
   );
 }
 
+const PRACTICE = [
+  {title: 'Speaking session', note: '15 min chat', href: '#/practice/chat', icon: ChatBubbleLeftRightIcon},
+  {title: 'Short session', note: '5 min chat', href: '#/practice/short', icon: ClockIcon},
+  {title: 'Listening drill', note: 'Hear it, say it back', href: '#/practice/listen', icon: SpeakerWaveIcon},
+  {title: 'Learn 10 new words', note: 'Pick a topic or let it choose', href: '#/practice/words', icon: BookOpenIcon},
+];
+
 // ============= MAIN COMPONENT =============
 
 export default function Overview() {
@@ -226,6 +240,26 @@ export default function Overview() {
               />
             </HStack>
 
+            {/* Practice */}
+            <VStack gap={3}>
+              <Heading level={3}>Practise now</Heading>
+              <Grid columns={{minWidth: 200, repeat: 'fit'}} gap={3}>
+                {PRACTICE.map(p => (
+                  <ClickableCard key={p.href} label={p.title} href={p.href} elevation="low" padding={3}>
+                    <HStack gap={3} vAlign="center">
+                      <Icon icon={p.icon} size="lg" color="accent" />
+                      <VStack gap={0}>
+                        <Text weight="semibold">{p.title}</Text>
+                        <Text type="supporting" color="secondary">
+                          {p.note}
+                        </Text>
+                      </VStack>
+                    </HStack>
+                  </ClickableCard>
+                ))}
+              </Grid>
+            </VStack>
+
             {/* Tiles */}
             <Grid columns={{minWidth: 150, repeat: 'fit'}} gap={4}>
               <MetricCard label="Due today" value={String(s.due)} note={`of ${s.items} tracked items`} />
@@ -250,7 +284,7 @@ export default function Overview() {
                 <EmptyState
                   isCompact
                   title="No practice in the last 14 days"
-                  description="Run /dansk in Claude Code or review some cards here."
+                  description="Start a practice session or review some cards here."
                 />
               )}
             </VStack>

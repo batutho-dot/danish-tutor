@@ -4,7 +4,8 @@
     python dansk_app.py [--db PATH] [--port N] [--no-browser] [--demo] [--today YYYY-MM-DD]
 
 Database path, first match wins: --db, DANISH_TUTOR_DB, `db_path` in the settings file, then
-~/.claude/danish-tutor/dansk.db (the same lookup as dansk_db.py). --demo imports the invented
+~/.claude/danish-tutor/dansk.db (the same lookup as dansk_db.py); a missing one is created
+empty on the first run. --demo imports the invented
 example-data into a fresh temporary database, serves that, and deletes it on exit; its "today"
 is 2026-11-06 unless --today is given, so the example dates look current.
 
@@ -14,8 +15,12 @@ request must name 127.0.0.1:<port> or localhost:<port> as its Host, which blocks
 rebinding. No CORS headers are sent, so other sites cannot read the API.
 
 API (JSON): GET /api/summary, /api/due, /api/patterns, /api/words?q=&kind=&level=&due=,
-/api/words/<id>, /api/sessions, /api/sessions/<id>, /api/review/preview?item_id=;
-PUT and DELETE /api/words/<id>; POST /api/review {item_id, quality, elapsed_seconds}.
+/api/words/<id>, /api/items/<id>, /api/sessions, /api/sessions/<id>,
+/api/review/preview?item_id=, /api/voice; PUT and DELETE /api/words/<id> and /api/items/<id>;
+POST /api/review {item_id, quality, elapsed_seconds}, /api/speak {text, slow}, /api/speak/stop.
+Practice sessions (dansk_practice.py): GET /api/practice, POST /api/practice/start {mode,
+topic}, GET /api/practice/<sid>/events?after=N (long poll), POST /api/practice/<sid>/message
+{text, via}, /end, /retry, /stop.
 Writes run in one transaction each; bad input gets 400 with a message and changes nothing.
 
 SM-2 comes from dansk_db.sm2 (Wozniak 1990); nothing here recomputes it. Standard library only.
@@ -32,9 +37,11 @@ import secrets
 import shutil
 import signal
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import webbrowser
 from datetime import date, timedelta
@@ -44,6 +51,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dansk_db  # noqa: E402
+import dansk_practice  # noqa: E402
+import speak  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "app" / "dist"
@@ -65,14 +74,35 @@ class NotFound(Exception):
     pass
 
 
+class Conflict(Exception):
+    """The request cannot be done now: becomes a 409 with this message."""
+
+
+class Unavailable(Exception):
+    """No voice: becomes a 503 with this message."""
+
+
+VOICE_LABELS = {"local": "Local voice", "system": "System voice", "none": "none"}
+VOICE_TTL = 60
+MAX_SPEAK = 1000
+POLL_SECONDS = 20
+
+
 # ---------------------------------------------------------------- API logic (no HTTP here)
 
 class Api:
-    def __init__(self, db: Path, today: str | None = None, demo: bool = False):
+    def __init__(self, db: Path, today: str | None = None, demo: bool = False,
+                 cfg: dict | None = None):
         self.db = db
         self.fixed_today = today
         self.demo = demo
+        self.cfg = dansk_db.load_config() if cfg is None else cfg
         self.lock = threading.Lock()      # one writer at a time
+        self.practice = dansk_practice.PracticeManager(db, self.today, self.lock, self.cfg)
+        self.voice_cache: tuple[float, str] | None = None
+        self.system_cache: tuple[float, bool] | None = None
+        self.speech_proc = None
+        self.speech_lock = threading.Lock()
 
     def today(self) -> str:
         return self.fixed_today or date.today().isoformat()
@@ -228,14 +258,7 @@ class Api:
         unknown = sorted(set(body) - set(dansk_db.WORD_EDIT_FIELDS))
         if unknown:
             raise BadRequest("not editable: " + ", ".join(unknown))
-        fields = {}
-        for k, v in body.items():
-            if v is not None and not isinstance(v, str):
-                raise BadRequest(f"{k}: must be text")
-            if v is not None and len(v) > MAX_FIELD:
-                raise BadRequest(f"{k}: at most {MAX_FIELD} characters")
-            v = v.strip() if isinstance(v, str) else v
-            fields[k] = v if v else None
+        fields = clean_fields(body)
         if "headword" in fields and not fields["headword"]:
             raise BadRequest("headword: required text")
         with self.lock:
@@ -263,6 +286,219 @@ class Api:
             finally:
                 con.close()
         return {"deleted": n}
+
+
+    # ---- items (what a review card shows)
+
+    def item(self, item_id: str) -> dict:
+        con = self.con()
+        try:
+            it = dansk_db.get_item(con, item_id)
+            if it is None:
+                raise NotFound()
+            d = dict(it)
+            d["reviews"] = dansk_db.item_reviews(con, item_id)
+            return d
+        finally:
+            con.close()
+
+    def edit_item(self, item_id: str, body) -> dict:
+        if not isinstance(body, dict) or not body:
+            raise BadRequest("body must be a JSON object with at least one field")
+        unknown = sorted(set(body) - set(dansk_db.ITEM_EDIT_FIELDS))
+        if unknown:
+            raise BadRequest("not editable: " + ", ".join(unknown))
+        fields = clean_fields(body)
+        for k in ("content", "answer"):
+            if k in fields and not fields[k]:
+                raise BadRequest(f"{k}: required text")
+        with self.lock:
+            con = self.con()
+            try:
+                if dansk_db.get_item(con, item_id) is None:
+                    raise NotFound()
+                with con:
+                    dansk_db.update_item(con, item_id, fields)
+            finally:
+                con.close()
+        return self.item(item_id)
+
+    def delete_item(self, item_id: str) -> dict:
+        with self.lock:
+            con = self.con()
+            try:
+                if dansk_db.get_item(con, item_id) is None:
+                    raise NotFound()
+                with con:
+                    n = dansk_db.delete_item(con, item_id)
+            finally:
+                con.close()
+        return {"deleted": n}
+
+    # ---- voice: speak.py's local daemon first, then the system voice
+
+    def voice_setting(self) -> str:
+        v = str(self.cfg.get("voice") or "auto")
+        return v if v in speak.VOICES else "auto"
+
+    def system_ok(self) -> bool:
+        now = time.monotonic()
+        if self.system_cache is None or now - self.system_cache[0] > VOICE_TTL:
+            self.system_cache = (now, speak.system_voice_available())
+        return self.system_cache[1]
+
+    def voice(self, fresh: bool = False) -> dict:
+        now = time.monotonic()
+        if fresh or self.voice_cache is None or now - self.voice_cache[0] > VOICE_TTL:
+            setting = self.voice_setting()
+            if setting in ("auto", "local-daemon") and speak.daemon_up():
+                v = "local"
+            elif setting in ("auto", "system") and self.system_ok():
+                v = "system"
+            else:
+                v = "none"
+            self.voice_cache = (now, v)
+        v = self.voice_cache[1]
+        return {"voice": v, "label": VOICE_LABELS[v], "setting": self.voice_setting()}
+
+    def speak(self, body) -> dict:
+        """Speak Danish text with the best voice the server has. The text is never logged."""
+        if not isinstance(body, dict):
+            raise BadRequest("body must be a JSON object")
+        unknown = sorted(set(body) - {"text", "slow"})
+        if unknown:
+            raise BadRequest("unknown key: " + ", ".join(unknown))
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise BadRequest("text: required")
+        if len(text) > MAX_SPEAK:
+            raise BadRequest(f"text: at most {MAX_SPEAK} characters")
+        slow = bool(body.get("slow"))
+        setting = self.voice_setting()
+        self.stop_system_speech()
+        if setting in ("auto", "local-daemon") and speak.speak_daemon(text):
+            self.voice_cache = (time.monotonic(), "local")
+            return {"voice": "local"}
+        if setting in ("auto", "system") and self.system_ok():
+            default = 130 if slow else 150
+            try:
+                rate = int(self.cfg.get("replay_rate" if slow else "listen_rate") or default)
+            except (TypeError, ValueError):
+                rate = default
+            cmd = speak.system_command(text, max(50, min(400, rate)))
+            if not isinstance(cmd, int):
+                args, env, stdin = cmd
+                proc = subprocess.Popen(args, env=env,
+                                        stdin=subprocess.PIPE if stdin is not None else None,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with self.speech_lock:
+                    self.speech_proc = proc
+                if stdin is not None:
+                    threading.Thread(target=feed_stdin, args=(proc, stdin), daemon=True).start()
+                self.voice_cache = (time.monotonic(), "system")
+                return {"voice": "system"}
+        self.voice_cache = (time.monotonic(), "none")
+        raise Unavailable("no Danish voice on this computer")
+
+    def stop_system_speech(self):
+        with self.speech_lock:
+            p, self.speech_proc = self.speech_proc, None
+        if p is not None and p.poll() is None:
+            p.kill()
+
+    def speak_stop(self) -> dict:
+        self.stop_system_speech()
+        if self.voice_setting() in ("auto", "local-daemon"):
+            speak.stop_daemon()
+        return {"stopped": True}
+
+    # ---- practice sessions
+
+    def practice_status(self) -> dict:
+        return self.practice.status()
+
+    def practice_start(self, body) -> dict:
+        if not isinstance(body, dict):
+            raise BadRequest("body must be a JSON object")
+        unknown = sorted(set(body) - {"mode", "topic"})
+        if unknown:
+            raise BadRequest("unknown key: " + ", ".join(unknown))
+        mode = body.get("mode")
+        if mode not in dansk_practice.MODES:
+            raise BadRequest("mode: must be " + ", ".join(dansk_practice.MODES))
+        topic = body.get("topic")
+        if topic is not None and not isinstance(topic, str):
+            raise BadRequest("topic: must be text")
+        topic = (topic or "").strip()[:200] or None
+        try:
+            s = self.practice.start(mode, topic)
+        except dansk_practice.PracticeError as e:
+            raise Conflict(str(e))
+        return s.snapshot()
+
+    def session_obj(self, sid: str):
+        try:
+            return self.practice.get(sid)
+        except KeyError:
+            raise NotFound()
+
+    def practice_events(self, sid: str, query: dict) -> dict:
+        s = self.session_obj(sid)
+        try:
+            after = max(0, int(one(query, "after") or 0))
+        except ValueError:
+            raise BadRequest("after: must be a whole number")
+        evs = s.wait_events(after, POLL_SECONDS)
+        return {"events": evs, "session": s.snapshot()}
+
+    def practice_message(self, sid: str, body) -> dict:
+        s = self.session_obj(sid)
+        if not isinstance(body, dict) or set(body) - {"text", "via"}:
+            raise BadRequest("body must be {text, via}")
+        text = body.get("text")
+        via = body.get("via", "typed")
+        if not isinstance(text, str) or not text.strip():
+            raise BadRequest("text: required")
+        if len(text) > dansk_practice.MAX_MESSAGE:
+            raise BadRequest(f"text: at most {dansk_practice.MAX_MESSAGE} characters")
+        if via not in ("typed", "voice"):
+            raise BadRequest("via: typed or voice")
+        return self._act(lambda: s.send(text.strip(), via), s)
+
+    def practice_action(self, sid: str, action: str) -> dict:
+        s = self.session_obj(sid)
+        fn = {"end": s.end, "retry": s.retry_save, "stop": s.stop}[action]
+        return self._act(fn, s)
+
+    @staticmethod
+    def _act(fn, s) -> dict:
+        try:
+            fn()
+        except dansk_practice.PracticeError as e:
+            raise Conflict(str(e))
+        return s.snapshot()
+
+
+def feed_stdin(proc, text: str):
+    try:
+        proc.stdin.write(text.encode("utf-8"))
+        proc.stdin.close()
+    except OSError:
+        pass
+
+
+def clean_fields(body: dict) -> dict:
+    """Text fields from a JSON body: strings only, at most MAX_FIELD characters, trimmed, and
+    an empty string stored as NULL."""
+    fields = {}
+    for k, v in body.items():
+        if v is not None and not isinstance(v, str):
+            raise BadRequest(f"{k}: must be text")
+        if v is not None and len(v) > MAX_FIELD:
+            raise BadRequest(f"{k}: at most {MAX_FIELD} characters")
+        v = v.strip() if isinstance(v, str) else v
+        fields[k] = v if v else None
+    return fields
 
 
 def one(query: dict, key: str) -> str:
@@ -298,6 +534,22 @@ ROUTES = [
     ("GET", re.compile(r"^/api/sessions/([A-Za-z0-9_.-]{1,80})$"), lambda a, m, q, b: a.session(m[1])),
     ("GET", re.compile(r"^/api/review/preview$"), lambda a, m, q, b: a.preview(q)),
     ("POST", re.compile(r"^/api/review$"), lambda a, m, q, b: a.review(b)),
+    ("GET", re.compile(r"^/api/items/([^/]{1,200})$"), lambda a, m, q, b: a.item(unquote(m[1]))),
+    ("PUT", re.compile(r"^/api/items/([^/]{1,200})$"),
+     lambda a, m, q, b: a.edit_item(unquote(m[1]), b)),
+    ("DELETE", re.compile(r"^/api/items/([^/]{1,200})$"),
+     lambda a, m, q, b: a.delete_item(unquote(m[1]))),
+    ("GET", re.compile(r"^/api/voice$"), lambda a, m, q, b: a.voice(fresh=one(q, "fresh") == "1")),
+    ("POST", re.compile(r"^/api/speak$"), lambda a, m, q, b: a.speak(b)),
+    ("POST", re.compile(r"^/api/speak/stop$"), lambda a, m, q, b: a.speak_stop()),
+    ("GET", re.compile(r"^/api/practice$"), lambda a, m, q, b: a.practice_status()),
+    ("POST", re.compile(r"^/api/practice/start$"), lambda a, m, q, b: a.practice_start(b)),
+    ("GET", re.compile(r"^/api/practice/([0-9a-f]{16})/events$"),
+     lambda a, m, q, b: a.practice_events(m[1], q)),
+    ("POST", re.compile(r"^/api/practice/([0-9a-f]{16})/message$"),
+     lambda a, m, q, b: a.practice_message(m[1], b)),
+    ("POST", re.compile(r"^/api/practice/([0-9a-f]{16})/(end|retry|stop)$"),
+     lambda a, m, q, b: a.practice_action(m[1], m[2])),
 ]
 
 # Fixed types for what a Vite build emits (the Windows registry can map .js to text/plain).
@@ -401,6 +653,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.error(400, str(e))
             except NotFound:
                 return self.error(404, "not found")
+            except Conflict as e:
+                return self.error(409, str(e))
+            except Unavailable as e:
+                return self.error(503, str(e))
             except sqlite3.Error as e:
                 traceback.print_exc(file=sys.stderr)
                 return self.error(500, f"database error, nothing written: {type(e).__name__}")
@@ -431,7 +687,8 @@ class AppServer(ThreadingHTTPServer):
 
 
 def make_server(db: Path, dist: Path = DIST, port: int = DEFAULT_PORT, today: str | None = None,
-                demo: bool = False, tries: int = 20, quiet: bool = False) -> AppServer:
+                demo: bool = False, tries: int = 20, quiet: bool = False,
+                cfg: dict | None = None) -> AppServer:
     """Bind on 127.0.0.1, trying `port` and the next ones (port 0: any free port)."""
     last = None
     for p in ([0] if port == 0 else range(port, port + tries)):
@@ -443,11 +700,24 @@ def make_server(db: Path, dist: Path = DIST, port: int = DEFAULT_PORT, today: st
     else:
         raise OSError(f"no free port from {port} to {port + tries - 1}: {last}")
     srv.port = srv.server_address[1]
-    srv.api = Api(db, today, demo)
+    srv.api = Api(db, today, demo, cfg)
     srv.dist = dist.resolve()
     srv.token = secrets.token_urlsafe(32)
     srv.quiet = quiet
     return srv
+
+
+def create_db(path: Path) -> None:
+    """A new, empty database with the learner row from the settings (first run)."""
+    cfg = dansk_db.load_config()
+    con = dansk_db.connect(path)
+    try:
+        with con:
+            dansk_db.set_learner(con, level=cfg.get("level") or "A2",
+                                 target_level=cfg.get("target_level") or "B2",
+                                 support_language=cfg.get("support_language") or "English")
+    finally:
+        con.close()
 
 
 def build_demo_db(folder: Path) -> Path:
@@ -500,8 +770,16 @@ def main(argv: list[str] | None = None) -> int:
         db = dansk_db.db_path(a.db)
         today = a.today
         if not db.is_file():
-            print(f"no database at {db}: run /dansk once, import with scripts/import_fluent.py, "
-                  "or try --demo")
+            try:
+                create_db(db)
+            except (sqlite3.Error, OSError) as e:
+                print(f"cannot create a database at {db}: {e}")
+                return 1
+            print(f"created a new, empty database at {db}")
+        try:
+            dansk_db.connect(db).close()    # upgrade an older schema once, before parallel requests
+        except sqlite3.Error as e:
+            print(f"cannot open the database at {db}: {e}")
             return 1
     try:
         try:
@@ -526,6 +804,8 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             pass
         finally:
+            srv.api.practice.stop_all()
+            srv.api.stop_system_speech()
             srv.server_close()
             print("stopped")
     finally:

@@ -13,7 +13,10 @@ imported into a temporary database builds the same dashboard summary and due dat
 payload recorded into a temporary database can be read back, and a bad payload writes
 nothing; the committed app build in app/dist is complete (every file index.html references,
 THIRD_PARTY_NOTICES.txt) and scripts/dansk_app.py serves it from a temporary database with
-its token check; the repository is unchanged afterwards. app/node_modules is not needed.
+its token check; a practice session against the scripted tutor in tests/fake_tutor.py
+keeps the live correction and the listening sentence out of the chat text and saves its
+payload; the repository is unchanged afterwards. app/node_modules is not needed, and the
+Anthropic API is never called.
 
 SM-2 rules: Wozniak (1990), "SuperMemo 2: Algorithm",
 https://super-memory.com/english/ol/sm2.htm.
@@ -93,10 +96,20 @@ def child_env(tmp):
     pointing into the temp folder so no real learner file is ever read."""
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8",
                DANISH_TUTOR_CONFIG=os.path.join(tmp, "no-config.json"),
-               DANISH_TUTOR_DB=os.path.join(tmp, "unused.db"))
-    env.pop("DANSK_DATA_DIR", None)
-    env.pop("DANSK_WORDS_DIR", None)
+               DANISH_TUTOR_DB=os.path.join(tmp, "unused.db"),
+               CLV_SOCKET=os.path.join(tmp, "no-voice.sock"), CLV_PORT=str(closed_port()))
+    for k in ("DANSK_DATA_DIR", "DANSK_WORDS_DIR", "DANISH_TUTOR_BACKEND",
+              "DANISH_TUTOR_ANTHROPIC_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        env.pop(k, None)
     return env
+
+
+def closed_port():
+    """A port nothing listens on, so no step can reach a real voice daemon."""
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def run_py(args, tmp, stdin=None):
@@ -378,7 +391,7 @@ def step_app_build():
                     "--data", os.path.join(ROOT, "example-data"), "--db", str(dbf)], tmp)
         if r.returncode:
             raise Fail(f"import exit {r.returncode}: {(r.stdout + r.stderr).strip()}")
-        srv = app.make_server(dbf, dist, port=0, today=TODAY, quiet=True)
+        srv = app.make_server(dbf, dist, port=0, today=TODAY, quiet=True, cfg={})
         t = threading.Thread(target=srv.serve_forever, daemon=True)
         t.start()
         try:
@@ -412,6 +425,94 @@ def step_app_build():
             "index with token, 403 without it, summary 13 words, 16 items, 15 due")
 
 
+def step_practice():
+    """A short practice session against the scripted fake tutor (tests/fake_tutor.py, no
+    network): the live correction and the hidden sentence arrive as their own events and
+    never in the chat text, the payload is saved with the correction as an error, the
+    session finishes."""
+    import http.client
+    import threading
+    import time
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    app = load("dansk_app", "scripts", "dansk_app.py")
+    fake = os.path.join(ROOT, "tests", "fake_tutor.py")
+    saved_env = {k: os.environ.get(k) for k in ("DANISH_TUTOR_BACKEND", "FAKE_TUTOR_SCENARIO",
+                                                 "FAKE_TUTOR_DELAY")}
+    os.environ["DANISH_TUTOR_BACKEND"] = fake
+    os.environ.pop("FAKE_TUTOR_SCENARIO", None)
+    os.environ.pop("FAKE_TUTOR_DELAY", None)
+    app.POLL_SECONDS = 2
+    with tempfile.TemporaryDirectory() as tmp:
+        dbf = Path(tmp, "practice.db")
+        r = run_py([os.path.join(ROOT, "scripts", "import_fluent.py"),
+                    "--data", os.path.join(ROOT, "example-data"), "--db", str(dbf)], tmp)
+        if r.returncode:
+            raise Fail(f"import exit {r.returncode}: {(r.stdout + r.stderr).strip()}")
+        srv = app.make_server(dbf, Path(ROOT, "app", "dist"), port=0, today=TODAY, quiet=True, cfg={})
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        events = []
+
+        def call(method, path, body=None):
+            c = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+            c.request(method, path, body=json.dumps(body) if body is not None else None,
+                      headers={"Host": f"127.0.0.1:{srv.port}", "X-Dansk-Token": srv.token,
+                               "Content-Type": "application/json"})
+            resp = c.getresponse()
+            data = json.loads(resp.read())
+            c.close()
+            return resp.status, data
+
+        def until(sid, pred):
+            end = time.monotonic() + 30
+            while time.monotonic() < end:
+                _, d = call("GET", f"/api/practice/{sid}/events?after={len(events)}")
+                events.extend(d["events"])
+                if pred(d["session"]):
+                    return
+            raise Fail(f"practice timed out in state {d['session']['state']}")
+
+        try:
+            status, s = call("POST", "/api/practice/start", {"mode": "short"})
+            if status != 200:
+                raise Fail(f"start gave {status}: {s}")
+            sid = s["id"]
+            until(sid, lambda x: x["state"] == "waiting")
+            for text in ("Fordi jeg har ikke tid", "Hvor er nøglen"):
+                call("POST", f"/api/practice/{sid}/message", {"text": text, "via": "typed"})
+                until(sid, lambda x: x["state"] == "waiting")
+            call("POST", f"/api/practice/{sid}/end")
+            until(sid, lambda x: x["state"] == "finished")
+            shown = "".join(e.get("text", "") for e in events if e["type"] == "text")
+            listen = [e["sentence"] for e in events if e["type"] == "listen"]
+            saved = [e["line"] for e in events if e["type"] == "saved"]
+            if listen != ["Hvor har du lagt nøglen?"] or "nøglen" in shown:
+                raise Fail(f"listening sentence not hidden: listen {listen}")
+            fixes = [(e["said"], e["correct"]) for e in events if e["type"] == "fix"]
+            if fixes != [("fordi jeg har ikke tid", "fordi jeg ikke har tid")] or "<fix>" in shown:
+                raise Fail(f"live correction not delivered as its own event: {fixes}")
+            if not saved or "1 new words, 1 errors" not in saved[0]:
+                raise Fail(f"no saved line: {[e['type'] for e in events]}")
+        finally:
+            srv.api.practice.stop_all()
+            srv.shutdown()
+            srv.server_close()
+            t.join(5)
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        con = sqlite3.connect(str(dbf))
+        try:
+            word = con.execute("SELECT gloss FROM words WHERE headword = 'paraply'").fetchone()
+        finally:
+            con.close()
+        if word != ("umbrella",):
+            raise Fail(f"new word not in the database: {word}")
+    return f"{saved[0]}; correction and listening sentence kept out of the chat text"
+
+
 def main():
     print(f"verify: {os.path.basename(ROOT)}")
     before = snapshot()
@@ -420,7 +521,8 @@ def main():
              ("scheduling", step_scheduling), ("readme length", step_readme),
              ("banned strings", step_banned), ("plugin manifest", step_manifest),
              ("unit tests", step_unittests), ("db import", step_db_import),
-             ("record round trip", step_record), ("app build", step_app_build)]
+             ("record round trip", step_record), ("app build", step_app_build),
+             ("practice (fake tutor)", step_practice)]
     for name, fn in steps:
         try:
             print(f"{name}: {fn()}")

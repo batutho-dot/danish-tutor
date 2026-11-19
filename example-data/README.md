@@ -4,7 +4,8 @@ Everything in this folder is **invented example data**. No real learner, session
 mistake is recorded here. It exists so the dashboard can be built and `verify.py` can run on a
 fresh clone.
 
-- `spaced-repetition.json`, `session-log.json`, `progress-db.json`, `learner-profile.json`:
+- `spaced-repetition.json`, `session-log.json`, `progress-db.json`, `learner-profile.json`,
+  `mistakes-db.json` (two error patterns, with descriptions and contexts):
   Fluent-format files, as read by the dashboard's JSON mode and by
   `scripts/import_fluent.py`. Each carries a `_note` key saying it is invented. Only the keys
   those two read are filled in; a real Fluent folder holds more. The plugin itself does not

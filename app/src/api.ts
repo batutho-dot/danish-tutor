@@ -105,9 +105,65 @@ export interface Card {
   gender: string | null;
   level: string | null;
   examples: string[];
-  context?: string | null;
+  repetitions: number;
+  interval_days: number;
+  description: string | null;
+  noted: string | null;
+  context: string | null;
   severity?: string | null;
+  mistake_date?: string | null;
+  pairs?: [string, string][];
 }
+
+export interface ItemDetail {
+  id: string;
+  kind: string;
+  content: string | null;
+  answer: string | null;
+  category: string | null;
+  description: string | null;
+  context: string | null;
+  word_id: number | null;
+}
+
+export type ItemEdit = Partial<Record<'content' | 'answer' | 'description' | 'context' | 'category', string | null>>;
+
+export type VoiceKind = 'local' | 'system' | 'none';
+
+export interface PracticeSnapshot {
+  id: string;
+  mode: string;
+  topic: string | null;
+  state: 'starting' | 'replying' | 'waiting' | 'saved' | 'finished' | 'ended';
+  saved_line: string | null;
+  payload_file: string | null;
+  events: number;
+}
+
+export interface PracticeStatus {
+  available: boolean;
+  problem: 'sdk' | 'key' | null;
+  message: string;
+  model: string;
+  goal: string;
+  topics: string[];
+  modes: Record<string, string>;
+  session: PracticeSnapshot | null;
+}
+
+export type PracticeEvent = {seq: number} & (
+  | {type: 'text'; text: string}
+  | {type: 'listen'; sentence: string}
+  | {type: 'signal'; signal: 'your_turn' | 'listening' | 'replay' | 'saving' | 'done'; detail: string}
+  | {type: 'turn_end'; text: string}
+  | {type: 'user'; text: string; via: 'typed' | 'voice'}
+  | {type: 'state'; state: PracticeSnapshot['state']}
+  | {type: 'saved'; line: string; lines: string[]}
+  | {type: 'save_error'; problems: string[]; path: string | null}
+  | {type: 'fix'; said: string; correct: string; why: string}
+  | {type: 'discard'}
+  | {type: 'error'; message: string; kind?: string}
+);
 
 export interface PreviewOption {
   quality: number;
@@ -239,7 +295,41 @@ export const api = {
     call<{deleted: Record<string, number>}>('DELETE', `/api/words/${id}`),
   sessions: () => call<{sessions: SessionRow[]}>('GET', '/api/sessions'),
   session: (id: string) => call<SessionFull>('GET', `/api/sessions/${encodeURIComponent(id)}`),
+  item: (id: string) => call<ItemDetail>('GET', `/api/items/${encodeURIComponent(id)}`),
+  editItem: (id: string, fields: ItemEdit) =>
+    call<ItemDetail>('PUT', `/api/items/${encodeURIComponent(id)}`, fields),
+  deleteItem: (id: string) =>
+    call<{deleted: Record<string, number>}>('DELETE', `/api/items/${encodeURIComponent(id)}`),
+  voice: () => call<{voice: VoiceKind; label: string; setting: string}>('GET', '/api/voice'),
+  speak: (text: string, slow = false) => call<{voice: VoiceKind}>('POST', '/api/speak', {text, slow}),
+  speakStop: () => call<{stopped: boolean}>('POST', '/api/speak/stop'),
+  practice: () => call<PracticeStatus>('GET', '/api/practice'),
+  practiceStart: (mode: string, topic?: string) =>
+    call<PracticeSnapshot>('POST', '/api/practice/start', topic ? {mode, topic} : {mode}),
+  practiceEvents: (id: string, after: number) =>
+    call<{events: PracticeEvent[]; session: PracticeSnapshot}>('GET', `/api/practice/${id}/events?after=${after}`),
+  practiceSend: (id: string, text: string, via: 'typed' | 'voice') =>
+    call<PracticeSnapshot>('POST', `/api/practice/${id}/message`, {text, via}),
+  practiceAction: (id: string, action: 'end' | 'retry' | 'stop') =>
+    call<PracticeSnapshot>('POST', `/api/practice/${id}/${action}`),
 };
+
+// Stop a practice session while the page is being closed (keepalive lets the request finish).
+export function stopPracticeOnUnload(id: string) {
+  try {
+    void fetch(`/api/practice/${id}/stop`, {method: 'POST', keepalive: true, headers: {'X-Dansk-Token': TOKEN}});
+  } catch {
+    // the server's watchdog stops it anyway once polling ends
+  }
+}
+
+// Pages refetch when this fires: after a practice session saves, and when the window gets
+// focus again.
+export const DATA_CHANGED = 'dansk-data-changed';
+
+export function announceDataChanged() {
+  window.dispatchEvent(new Event(DATA_CHANGED));
+}
 
 export function fmtDate(iso: string | null | undefined): string {
   if (!iso) {

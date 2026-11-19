@@ -6,11 +6,11 @@
     {
       "name": "danish-tutor",
       "source": "./",
-      "description": "Spoken Danish practice: conversation, hidden listening drill, SM-2 spaced repetition, local SQLite store.",
+      "description": "Spoken Danish practice in a local web app: chat with live corrections, hidden listening drill, new words, SM-2 spaced repetition, local SQLite store.",
       "category": "education",
       "tags": ["danish", "language-learning", "spaced-repetition"],
       "license": "PolyForm-Strict-1.0.0",
-      "version": "0.2.0"
+      "version": "0.3.0"
     }
   ]
 }

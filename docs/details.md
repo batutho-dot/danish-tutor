@@ -5,45 +5,53 @@
 | Path | What it is |
 |---|---|
 | `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` | Plugin and single-plugin marketplace manifests |
-| `skills/dansk/SKILL.md` | The `/dansk` session design |
+| `skills/dansk/SKILL.md` | The `/dansk` launcher: starts the app and gives the address |
+| `skills/dansk/session-rules.md` | The tutor's rules for every mode; the system prompt is built from it |
 | `skills/dansk/config.example.json` | Every setting with its default |
 | `scripts/dansk_db.py` | SQLite store, SM-2 scheduler, command line |
 | `scripts/dansk_text.py` | ASCII folding, word note parsing and writing (shared) |
 | `scripts/import_fluent.py` | One-way import from Fluent-format JSON |
-| `scripts/speak.py` | Speaks one hidden sentence with an installed Danish voice |
+| `scripts/speak.py` | Speaks Danish: a local text-to-speech daemon, else the system voice |
 | `scripts/dansk_app.py` | Local web app server: serves `app/dist` and a JSON API over the database |
+| `scripts/dansk_practice.py` | Practice sessions: prompt, stream filter, events, saving |
+| `scripts/dansk_tutor.py` | The tutor backend: the Anthropic API through the official Python SDK |
 | `app/` | The app's source (Vite, React, TypeScript, Astryx); `app/dist` is the committed build |
 | `dashboard/` | Static export: dashboard builder and its HTML template |
-| `tests/` | Unit tests (temp folders only) |
+| `tests/` | Unit tests (temp folders only); `tests/fake_tutor.py` is a scripted tutor with no network |
 | `verify.py` | End-to-end check, prints `verify: PASS` or `verify: FAIL at <step>` |
 
 ## Settings
 
-The skill and scripts read `~/.claude/danish-tutor/config.json`, or the file named in `DANISH_TUTOR_CONFIG`. Every key is optional. `skills/dansk/config.example.json` lists them all and the table in `skills/dansk/SKILL.md` says what each does. The scripts use:
+The scripts read `~/.claude/danish-tutor/config.json`, or the file named in `DANISH_TUTOR_CONFIG`. Every key is optional; `skills/dansk/config.example.json` lists them all. The scripts use:
 
 - `db_path`: the database file. Default `~/.claude/danish-tutor/dansk.db`. `DANISH_TUTOR_DB` overrides it, and `--db` overrides both.
 - `notes_dir`: empty by default (off). When set, `record` also writes markdown word notes to `<notes_dir>/words/` and a session record to `<notes_dir>/sessions/` after the database commit, in the format below.
-- `level`, `target_level`, `support_language`: copied to the learner row when a session is recorded, so the dashboard shows them.
+- `level`, `target_level`, `support_language`: copied to the learner row when a session is recorded; also given to the tutor.
+- `learner_name`, `goal`: given to the tutor. `goal` also picks the three topic suggestions for "Learn 10 new words".
+- `voice`: `auto` (default: the local daemon if it answers, else the system voice), `local-daemon` or `system`.
+- `listen_rate`, `replay_rate`: words per minute for the system voice (default 150, and 130 for "Replay slower").
 
-`listen_command` is empty by default, which means `scripts/speak.py`.
+Environment variables: `DANISH_TUTOR_ANTHROPIC_KEY` (see "Practice"), `CLV_PORT`, `CLV_SOCKET`, `CLV_HOME` (see `speak.py`), `DANISH_TUTOR_BACKEND` (a Python file with a `Backend` class that replaces the API; the tests use it).
 
 ## The database
 
-One SQLite file, created on first use. All SQL is in `scripts/dansk_db.py`, behind small functions (`insert_word`, `update_schedule`, `due_items` and so on). Column types are plain (TEXT, INTEGER, REAL) and dates are ISO `YYYY-MM-DD` strings, so a PostgreSQL backend means reimplementing those functions. The SQLite-specific parts are `INTEGER PRIMARY KEY` row ids (`SERIAL` or identity columns in PostgreSQL) and `lastrowid`.
+One SQLite file, created on first use (the app creates an empty one on its first start). All SQL is in `scripts/dansk_db.py`, behind small functions (`insert_word`, `update_schedule`, `due_items` and so on). Column types are plain (TEXT, INTEGER, REAL) and dates are ISO `YYYY-MM-DD` strings, so a PostgreSQL backend means reimplementing those functions. The SQLite-specific parts are `INTEGER PRIMARY KEY` row ids (`SERIAL` or identity columns in PostgreSQL) and `lastrowid`.
 
 | Table | Columns |
 |---|---|
-| `meta` | `key`, `value`. Holds `schema_version` (now `1`), `example_data` when the example files were imported, and `app_review_seconds:<session id>` for time spent reviewing in the app |
+| `meta` | `key`, `value`. Holds `schema_version` (now `2`), `example_data` when the example files were imported, and `app_review_seconds:<session id>` for time spent reviewing in the app |
 | `learner` | one row: `level`, `target_level`, `support_language` |
 | `words` | `headword` (unique), `kind` (`word` or `grammar`), `pos`, `gender`, `level`, `forms`, `definition`, `gloss`, `notes`, `learned`, `source` |
 | `examples` | `word_id`, `sentence`, `session_id` |
-| `items` | `id` (`vocab_noegle`, `grammar_...`, `error_...`), `kind` (`vocabulary`, `grammar`, `error_pattern`), `content`, `answer`, `category`, `difficulty`, `word_id`, `easiness_factor`, `interval_days`, `repetitions`, `due_date`, `last_reviewed`, `total_reviews`, `mastery_level` |
+| `items` | `id` (`vocab_noegle`, `grammar_...`, `error_...`), `kind` (`vocabulary`, `grammar`, `error_pattern`), `content`, `answer`, `category`, `difficulty`, `word_id`, `easiness_factor`, `interval_days`, `repetitions`, `due_date`, `last_reviewed`, `total_reviews`, `mastery_level`, and for error cards `description` (what the mistake is about), `context` (where it came up), `noted` (date last seen) |
 | `reviews` | `item_id`, `session_id`, `date`, `quality`, `ef_after`, `interval_after` |
 | `sessions` | `id` (`session-YYYY-MM-DD`, then `-2`, `-3` the same day), `date`, `duration_minutes`, `size`, `input_mode`, `topic`, `skills` (JSON list as text), `accuracy`, `summary` |
 | `errors` | `session_id`, `pattern_id`, `category`, `said`, `correct`, `context`, `severity` |
 | `listening` | `session_id`, `sentence`, `result` (`understood_fully`, `gist_only`, `missed`) |
 
 `mastery_level` is our own rule, not part of SM-2: `min(5, repetitions)`.
+
+Migration: opening a version 1 database adds the three `items` columns with `ALTER TABLE` (existing rows keep NULL) and sets `schema_version` to `2`. Error cards without a `context` fall back to the latest logged error for that pattern.
 
 ## Command line
 
@@ -58,10 +66,10 @@ python scripts/dansk_db.py stats [--json]
 Every command takes `--db PATH` and `--today YYYY-MM-DD`. `due`, `words` and `stats` never create a database; with none present they report a first session.
 
 - `due --json`: `due_count`, `due_items` (due on or before today, oldest first), `error_patterns` (most frequent first, with the latest wording), `learner`, `first_session`.
-- `record`: one JSON payload on standard input or from `--file`. Its shape is in `skills/dansk/SKILL.md`, Phase 5. Unknown keys are refused, so a typo cannot drop data. The whole payload is checked first: on any problem it prints every problem and exits 1 having written nothing. Then everything is written in one transaction; a database or disk error rolls it back and exits 2. On success it prints `saved <session id>, N reviews, N new words, N errors; X items due tomorrow` (X counts every item due on or before the day after the session).
+- `record`: one JSON payload on standard input or from `--file`. Its shape is in `skills/dansk/session-rules.md` (the same payload the app saves). Unknown keys are refused, so a typo cannot drop data. The whole payload is checked first: on any problem it prints every problem and exits 1 having written nothing. Then everything is written in one transaction; a database or disk error rolls it back and exits 2. On success it prints `saved <session id>, N reviews, N new words, N errors; X items due tomorrow` (X counts every item due on or before the day after the session).
   - A review runs SM-2 on the item and is logged in `reviews`.
   - A new word inserts the word, its example and an item (`vocab_` or, for `kind: grammar`, `grammar_`, then the headword folded to ASCII without `at`, `en` or `et`), due the next day with EF 2.5. A headword already present only gets the new example; its schedule is not reset.
-  - An error is logged. Item `error_<pattern_id>` is created (content = what was said, answer = the correct form, due the next day) or, if it exists, set back to repetitions 0 and interval 1, due the next day, EF unchanged.
+  - An error is logged. Item `error_<pattern_id>` is created (content = what was said, answer = the correct form, context and date noted, due the next day) or, if it exists, set back to repetitions 0 and interval 1, due the next day, EF unchanged, with the new date noted.
 
 ## Spaced repetition: SM-2
 
@@ -75,7 +83,7 @@ Source: P. Wozniak (1990), "SuperMemo 2: Algorithm", <https://super-memory.com/e
 
 Where the page leaves room: for q >= 3 the EF is updated first and the new interval uses it (I(n) = ceil(I(n-1) * EF')). For q < 3 the EF is kept, repetitions become 0 and the interval 1 day. The EF is rounded to 6 decimals so float noise cannot add a day. The due date is the review date plus the interval.
 
-The page also says to repeat, the same day, every item that scored below 4. That is a session practice; the scheduler does not do it.
+The page also says (step 7) to repeat, the same day, every item that scored below 4, until all score at least 4. The scheduler does not do it; the app's review does, in part: Again (1) and Hard (3) put the card at the end of the queue once more. Our reading: only the first grade of the day is stored and sets the schedule, and the repeat is practice that changes nothing, because the page describes the repeat as a drill after the graded review, not as a new review.
 
 Worked example (also in `tests/test_sm2.py` and `verify.py`): a new item answered 5, 5, 5 gets EF 2.6, 2.7, 2.8 and intervals 1, 6, ceil(6 * 2.8) = 17. A 2 after that resets the interval to 1 with EF 2.8 kept. Repeated 3s lower the EF by 0.14 each time until it stops at 1.3.
 
@@ -85,19 +93,25 @@ Worked example (also in `tests/test_sm2.py` and `verify.py`): a new item answere
 python scripts/import_fluent.py --data DIR [--words DIR] [--db PATH]
 ```
 
-One way; it never writes to the source. It reads `spaced-repetition.json` (items as an object keyed by id or as a list; keys `id`/`type` or `item_id`/`item_type`; types `vocabulary`, `grammar`, `grammar_rule` (stored as `grammar`), `error_pattern`), `session-log.json` and `learner-profile.json`. Schedule fields are copied when present: `easiness_factor`, `interval_days`, `repetitions`, `due_date`, `last_reviewed`, `total_reviews`, `mastery_level`. Missing ones start at EF 2.5, interval 0 and repetitions 0. Word notes come from `--words` (default `DIR/words` if it exists), parsed as the dashboard parses them. Anything already in the database (same headword, item id or session id) is skipped, so you can rerun it. It prints what it added.
+One way; it never writes to the source. It reads `spaced-repetition.json` (items as an object keyed by id or as a list; keys `id`/`type` or `item_id`/`item_type`; types `vocabulary`, `grammar`, `grammar_rule` (stored as `grammar`), `error_pattern`), `session-log.json` and `learner-profile.json`. Schedule fields are copied when present: `easiness_factor`, `interval_days`, `repetitions`, `due_date`, `last_reviewed`, `total_reviews`, `mastery_level`. Missing ones start at EF 2.5, interval 0 and repetitions 0. If `mistakes-db.json` is there, it adds to error cards: the pattern's `description`, the `context` of its latest example and the date it was last seen (the latest example's `date`, else `last_occurred`, else `last_seen`), and fills an empty content or answer from that example. It reads `error_patterns` as an object keyed by id or a list with `id` or `pattern_id`, matches the item `<id>` or `error_<id>`, fills only empty fields and never creates items. Word notes come from `--words` (default `DIR/words` if it exists), parsed as the dashboard parses them. Anything already in the database (same headword, item id or session id) is skipped, so you can rerun it. It prints what it added.
 
 ## speak.py
 
 ```
-python scripts/speak.py --rate WPM "sentence"
+python scripts/speak.py [--rate WPM] [--voice auto|local-daemon|system] "sentence"
+python scripts/speak.py --stop
 ```
+
+Backends in order (setting `voice`, or `--voice`):
+
+1. A local text-to-speech daemon that speaks this small JSON protocol, for example claude-local-voice. Windows: TCP `127.0.0.1:<CLV_PORT>` (default 47821). macOS and Linux: the Unix socket `CLV_SOCKET`, default `<CLV_HOME>/voice.sock` with `CLV_HOME` default `~/.claude-local-voice`. One JSON object per connection, `{"runs": [{"lang": "da", "text": "..."}]}` or `{"stop": true}`: connect (1.5 second timeout), send, shut down the write side, close. No rate is sent. If nothing answers, the next backend is used.
+2. The system voice:
 
 - macOS: `say` with "Sara (Enhanced)", else the first voice that `say -v '?'` lists as `da_DK`.
 - Windows: PowerShell with `System.Speech`, using the first enabled voice whose culture starts with `da`. SAPI takes a rate from -10 to 10, not words per minute; the script uses its own approximation, not a measured one: `round((wpm - 150) / 15)`, clamped. `System.Speech` may not list every installed voice. Not tested with a Danish voice.
 - Linux: `espeak-ng -v da`, if installed.
 
-The sentence never passes through a shell: it reaches `say` and `espeak-ng` on standard input and PowerShell in an environment variable, with argument lists only. Exit codes: 0 spoken, 1 bad arguments, 3 no Danish voice (with a one-line hint on how to add one), 4 the speech program failed.
+The sentence is never printed or logged, and never passes through a shell: it reaches `say` and `espeak-ng` on standard input and PowerShell in an environment variable, with argument lists only. Exit codes: 0 spoken (or stopped), 1 bad arguments, 3 no Danish voice (with a one-line hint on how to add one), 4 the speech program failed.
 
 ## The app
 
@@ -105,13 +119,15 @@ The sentence never passes through a shell: it reaches `say` and `espeak-ng` on s
 python scripts/dansk_app.py [--db PATH] [--port N] [--no-browser] [--demo] [--today YYYY-MM-DD]
 ```
 
-Standard library only; Windows and macOS. The database is found as in `dansk_db.py` (`--db`, `DANISH_TUTOR_DB`, `db_path`, then the default). With none it exits; it never creates one. `--demo` imports `example-data` into a temporary database, serves it with "today" fixed to 2026-11-06 (unless `--today` is given) and deletes it on exit. It listens on 127.0.0.1, port 8765 or the next free one, prints the URL and opens the browser unless `--no-browser`. Ctrl+C, SIGTERM or Ctrl+Break (Windows) stops it.
+Standard library only, plus the `anthropic` package for Practice; Windows and macOS. The database is found as in `dansk_db.py` (`--db`, `DANISH_TUTOR_DB`, `db_path`, then the default). With none it creates an empty one and says so. `--demo` imports `example-data` into a temporary database, serves it with "today" fixed to 2026-11-06 (unless `--today` is given) and deletes it on exit. It listens on 127.0.0.1, port 8765 or the next free one, prints the URL and opens the browser unless `--no-browser`. Ctrl+C, SIGTERM or Ctrl+Break (Windows) stops it.
 
-Pages: overview (due today, words known, streak, minutes this week, a 14-day chart, error patterns due, recent sessions); review (due items, oldest first; a card shows the Danish word or the wrong sentence, Space reveals gloss, forms, Danish definition and examples); word bank (search, filters, sortable columns, review history, edit and delete); sessions (errors and listening results). A banner shows when the database holds the example data.
+Pages: overview (practice buttons, due today, words known, streak, minutes this week, a 14-day chart, error patterns due, recent sessions); practice (below); review (due items, oldest first; Space reveals the answer); word bank (search, filters, sortable columns, review history, edit and delete); sessions (errors and listening results). A banner shows when the database holds the example data. Overview, word bank and sessions load again when the window gets focus or a practice session is saved.
+
+An error card shows "A mistake from <date>", the description and context, then "You said" and "Correct" after the reveal. Two mistakes joined by " / " are shown as pairs only when both sides split into the same number of parts. "Fix this card" edits what a card shows (content, answer, description, context; a word card edits the word) or deletes it with its review history; the schedule is not changed. Again and Hard bring the card back at the end of the queue (see the SM-2 section). A card at its first review notes that every grade schedules 1 day.
 
 Grades map to SM-2 quality: Again 1 (incorrect response; the correct one remembered), Hard 3 (correct with serious difficulty), Good 4 (correct after a hesitation), Easy 5 (perfect response). The interval on each button comes from the server's preview, which calls the same `sm2()` as the review itself; the browser computes no schedule. "Streak" here is the number of consecutive days with a session ending today or yesterday (0 otherwise). The static export counts back from the latest session instead.
 
-"Hear it" uses the browser's `speechSynthesis` with the first voice whose language starts with `da`. With none installed the button is disabled and its tooltip says how to add one. No audio goes through the server.
+Voice: "Hear it", replies and listening sentences go to `POST /api/speak`, which uses the local daemon or the system voice (as in `speak.py`, the text is never logged). When the server has neither, the browser's `speechSynthesis` with a `da` voice is used. The page shows which: "Local voice", "System voice", "Browser voice" or none.
 
 ### Reviews done in the app
 
@@ -122,7 +138,9 @@ The app uses one session row per day: id `app-review-YYYY-MM-DD`, `input_mode` t
 JSON under `/api/`.
 
 - Reads: `GET summary`, `due`, `patterns`, `words?q=&kind=&level=&due=` (`kind` word or grammar, `due` due or not_due), `words/<id>` (with examples, items and review history), `sessions`, `sessions/<id>` (errors, listening, reviews), `review/preview?item_id=` (next interval, EF and due date for qualities 1, 3, 4, 5).
-- Writes: `POST review` `{item_id, quality 0..5, elapsed_seconds}` runs `dansk_db.apply_review` and logs a review row. `PUT words/<id>` changes `headword`, `forms`, `definition`, `gloss`, `pos`, `gender`, `level`, `notes` (a linked item's content and answer follow the headword and gloss). `DELETE words/<id>` removes the word, its examples, its items and their reviews.
+- Writes: `POST review` `{item_id, quality 0..5, elapsed_seconds}` runs `dansk_db.apply_review` and logs a review row. `PUT words/<id>` changes `headword`, `forms`, `definition`, `gloss`, `pos`, `gender`, `level`, `notes` (a linked item's content and answer follow the headword and gloss). `DELETE words/<id>` removes the word, its examples, its items and their reviews. `GET`, `PUT`, `DELETE items/<id>`: one card; `PUT` changes `content`, `answer`, `description`, `context`, `category`; `DELETE` removes the card and its reviews.
+- Voice: `GET voice`, `POST speak` `{text, slow}`, `POST speak/stop`.
+- Practice: `GET practice` (available, the problem if not, model, modes, topic ideas, the running session), `POST practice/start` `{mode, topic}`, `GET practice/<id>/events?after=N` (long poll, up to 20 seconds), `POST practice/<id>/message` `{text, via: typed|voice}`, `POST practice/<id>/end` (wrap-up and save), `retry` (save again), `stop` (no save).
 
 Each write is one transaction. Bad input gets 400 with a message and changes nothing; unknown ids give 404; the client never sees a traceback.
 
@@ -131,12 +149,35 @@ Each write is one transaction. Bad input gets 400 with a message and changes not
 - Bound to 127.0.0.1 only.
 - A random token per run is written into the served `index.html` (a meta tag). Every `/api/` request must send it in the `X-Dansk-Token` header, or gets 403.
 - A request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` gets 403, which stops DNS rebinding.
-- No CORS headers, so other sites cannot read responses. A Content-Security-Policy allows only the app's own scripts and connections; the app makes no network calls (the theme's web font is left out for that reason).
+- No CORS headers, so other sites cannot read responses. A Content-Security-Policy allows only the app's own scripts and connections; the page makes no network calls of its own (the theme's web font is left out for that reason). The server calls the Anthropic API during practice; the browser's speech recognition may send audio to the browser maker.
 - Static files are served only from inside `app/dist`; `..`, encoded slashes and absolute paths give 404.
 
 ### Building the app
 
 `app/dist` is committed, so plugin users need no Node. To rebuild after changing `app/src`: `cd app && npm ci && npm run build` (Node 24 was used). The build escapes non-ASCII characters, drops licence comments and writes `app/dist/THIRD_PARTY_NOTICES.txt` with each bundled package, version and licence text. The UI uses Astryx (`@astryxdesign/core`, MIT); `app/AGENTS.md` holds its notes for coding agents.
+
+## Practice
+
+The tutor runs in the app server, not in the browser. `scripts/dansk_tutor.py` calls the Anthropic API with the official Python SDK (`pip install anthropic`, the only package outside the standard library):
+
+- Model `claude-sonnet-5-5`, streamed with `client.beta.messages.stream`, `max_tokens` 16000. Effort `low` for conversation turns and `medium` for the closing turn that writes the payload.
+- Server-side refusal fallback: beta `server-side-fallback-2026-07-01` with `fallbacks="default"`. A `refusal` stop reason ends the turn with a message.
+- The system prompt (`skills/dansk/session-rules.md`, the app's own rules, the learner's settings, due cards and known words) is sent with prompt caching.
+- Credentials: `DANISH_TUTOR_ANTHROPIC_KEY` if set, passed to the client explicitly; otherwise the SDK finds `ANTHROPIC_API_KEY` or an `ant auth login` profile itself. The key is never stored, logged or shown. No key or no SDK: Practice says what to do and the rest of the app works.
+- Errors (authentication, permission, rate limit, server, connection) become one readable line in the chat.
+
+Modes: `chat` (Speaking, 15 minutes), `short` (5 minutes), `listen` (Listening drill) and `words` (Learn 10 new words on a topic). One session runs at a time.
+
+The reply stream is filtered on the server, safe when a marker is split across chunks:
+
+- `<listen>sentence</listen>`: a hidden listening sentence, sent as its own event, spoken, and shown only after the learner answers.
+- `<fix>{"said", "correct", "why", ...}</fix>`: a live correction, shown under the learner's line.
+- Lines starting with a signal emoji (microphone, speaker, hourglass, check): turn state for the status chip.
+- The final ```json block: the session payload, never shown.
+
+Saving: every live correction not already in the payload's `errors` is added. The payload is checked and written in one transaction by the same code as `dansk_db.py record`. On success the chat shows the saved line; on failure it shows the problems, the payload is written to `dansk-payload-<date>-<id>.json` in the system temp folder, and "Try saving again" retries. Ending, stopping or closing the tab ends the session; a session with no poll for 90 seconds is stopped. Stopping the server stops the session.
+
+The conversation window: a push-to-talk button (click, or hold Space) using the browser's speech recognition (`da-DK`, where the browser has it); a text box that keeps focus for dictation tools, Enter sends, optional send after a pause (off by default); replies read aloud with Replay and Stop; "Show tutor text" (on by default) and "Read replies aloud", remembered in the browser.
 
 ## The static export (dashboard)
 
@@ -168,11 +209,13 @@ Written by `record` only when `notes_dir` is set, and read by the importer and J
 
 Word notes are matched to items by folding both to ASCII and dropping `at`, `en`, `et` and the `vocab_` or `grammar_` prefix.
 
-Not known: the full shape of Fluent's other files (for example `mistakes-db.json`), which that plugin defines. The importer does not read them, so past error logs are not imported; error-pattern items in `spaced-repetition.json` are.
+| `mistakes-db.json` (import only) | `error_patterns` (each: `description`, `last_occurred`, `last_seen`, `examples` with `incorrect`, `correct`, `context`, `date`) |
+
+Fluent defines more fields than these; the others are ignored.
 
 ## What was left out of the original
 
-The tool began as one learner's private setup. Removed, not generalised: an in-page chat tutor (it needed a local server holding an Anthropic API key), `/dansk import` for its sessions, two-machine database sync, an index note of every word, a personal text-to-speech hook (`speak_replies` covers having one of your own), and the dependency on the Fluent plugin (version 0.2.0). Its `update-db.py` is replaced by `dansk_db.py record`; no Fluent code was copied.
+The tool began as one learner's private setup. Removed, not generalised: `/dansk import` for its sessions, two-machine database sync, an index note of every word, a personal text-to-speech hook (a generic daemon protocol replaces it), and the dependency on the Fluent plugin (version 0.2.0). Version 0.3.0 moved the conversation from the terminal into the app, on the Anthropic API. Its `update-db.py` is replaced by `dansk_db.py record`; no Fluent code was copied.
 
 ## verify.py
 
@@ -180,7 +223,9 @@ The tool began as one learner's private setup. Removed, not generalised: an in-p
 python verify.py
 ```
 
-It checks, in order: every `.py` compiles; skill frontmatter; the dashboard build (JSON mode) from `example-data` with "today" fixed at 2026-11-06, checked against the summary line and three fixed strings; word note to item matching with four fixed due dates; SM-2 with hand-computed values; README length; banned strings and audio files; plugin manifests; the unit tests; import of `example-data` into a temporary database and a dashboard from it; a recorded payload read back, and a bad payload that writes nothing; the app build (every file `app/dist/index.html` references exists, the notices file is there, and the server serves the page with its token, refuses `/api/summary` without it and returns the example counts with it); repository unchanged.
+It checks, in order: every `.py` compiles; skill frontmatter; the dashboard build (JSON mode) from `example-data` with "today" fixed at 2026-11-06, checked against the summary line and three fixed strings; word note to item matching with four fixed due dates; SM-2 with hand-computed values; README length; banned strings and audio files; plugin manifests; the unit tests; import of `example-data` into a temporary database and a dashboard from it; a recorded payload read back, and a bad payload that writes nothing; the app build (every file `app/dist/index.html` references exists, the notices file is there, and the server serves the page with its token, refuses `/api/summary` without it and returns the example counts with it); a short practice session against the fake tutor (the correction and the hidden sentence arrive as their own events, the payload is saved with the correction as an error); repository unchanged.
+
+Child processes and the tests run without API credentials and with the voice daemon pointed at a closed port, so verify never calls the API or speaks.
 
 `node_modules` folders are skipped, so verify needs no Node. The banned-string check exempts e-mail addresses in `app/dist/THIRD_PARTY_NOTICES.txt`, which quotes other authors' copyright lines. It ends with `verify: PASS` or `verify: FAIL at <step>: <reason>`, exit code 0 or 1.
 

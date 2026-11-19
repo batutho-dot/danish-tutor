@@ -1,0 +1,35 @@
+{
+  "_note": "Invented example data for danish-tutor. Not a real learner's record.",
+  "error_patterns": {
+    "error_ikke_placement": {
+      "category": "grammar",
+      "subcategory": "word_order",
+      "description": "In a subordinate clause (after fordi, at, hvis, når) ikke goes before the verb.",
+      "severity": "moderate",
+      "frequency": 2,
+      "mastery_level": 0,
+      "last_seen": "2026-11-02",
+      "last_occurred": "2026-11-02",
+      "next_review": "2026-11-03",
+      "examples": [
+        {"incorrect": "fordi jeg har ikke tid", "correct": "fordi jeg ikke har tid",
+         "context": "Explaining why breakfast was skipped.", "date": "2026-11-02"}
+      ]
+    },
+    "error_cykel_gender": {
+      "category": "grammar",
+      "subcategory": "gender",
+      "description": "Cykel is a common-gender noun, so it takes en, not et.",
+      "severity": "minor",
+      "frequency": 1,
+      "mastery_level": 0,
+      "last_seen": "2026-11-04",
+      "last_occurred": "2026-11-04",
+      "next_review": "2026-11-05",
+      "examples": [
+        {"incorrect": "et ny cykel", "correct": "en ny cykel",
+         "context": "Talking about how you get to work.", "date": "2026-11-04"}
+      ]
+    }
+  }
+}
