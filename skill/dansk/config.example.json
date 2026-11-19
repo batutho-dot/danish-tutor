@@ -6,7 +6,7 @@
   "support_language": "English",
   "fluent_data_dir": "~/.claude/fluent-data",
   "fluent_hooks": "~/.claude/plugins/cache/m98/fluent/*/.claude/hooks",
-  "records_dir": "~/dansk-tutor/data",
+  "records_dir": "~/danish-tutor/data",
   "speak_replies": false,
   "listen_command": "say -v \"Sara (Enhanced)\" -r {rate} {text}",
   "listen_rate": 150,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""verify.py: check dansk-tutor end to end and print PASS or FAIL from real runs.
+"""verify.py: check danish-tutor end to end and print PASS or FAIL from real runs.
 
     python verify.py
 

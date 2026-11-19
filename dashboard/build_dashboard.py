@@ -12,7 +12,7 @@ Writes one self-contained HTML file (default: dansk-dashboard.html in the system
 
 Usage:
   python dashboard/build_dashboard.py --data example-data
-  python dashboard/build_dashboard.py --data ~/.claude/fluent-data --words ~/dansk-tutor/data/words --out dash.html
+  python dashboard/build_dashboard.py --data ~/.claude/fluent-data --words ~/danish-tutor/data/words --out dash.html
 
 The data folder can also come from the DANSK_DATA_DIR environment variable, and the word
 folder from DANSK_WORDS_DIR. Nothing is sent anywhere: the page is built locally and opened

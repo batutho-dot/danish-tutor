@@ -9,7 +9,7 @@ learned: 2026-11-02
 source: "dansk-session-2026-11-02"
 tags: [danish, word]
 example_data: true
-note: "Invented example data for dansk-tutor. Not a real learner's record."
+note: "Invented example data for danish-tutor. Not a real learner's record."
 ---
 
 # hus

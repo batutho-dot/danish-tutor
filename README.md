@@ -1,4 +1,4 @@
-# dansk-tutor
+# danish-tutor
 
 A Claude Code skill that runs a 15 minute spoken Danish practice session with hidden listening drills, silent spaced repetition and error logging, plus a local dashboard that shows the word bank and review queue.
 
@@ -15,7 +15,7 @@ mkdir -p ~/.claude/skills && cp -r skill/dansk ~/.claude/skills/dansk
 Optional settings (name, level, goal, support language, folders, listening voice):
 
 ```bash
-mkdir -p ~/.claude/dansk-tutor && cp skill/dansk/config.example.json ~/.claude/dansk-tutor/config.json
+mkdir -p ~/.claude/danish-tutor && cp skill/dansk/config.example.json ~/.claude/danish-tutor/config.json
 ```
 
 Build the dashboard on the invented example data (it prints the page's path):
@@ -27,7 +27,7 @@ python dashboard/build_dashboard.py --data example-data
 Build it on your own records:
 
 ```bash
-python dashboard/build_dashboard.py --data ~/.claude/fluent-data --words ~/dansk-tutor/data/words
+python dashboard/build_dashboard.py --data ~/.claude/fluent-data --words ~/danish-tutor/data/words
 ```
 
 Check the repository:

@@ -2,7 +2,7 @@
 
 ## Settings
 
-The skill reads `~/.claude/dansk-tutor/config.json`, or the file named in `DANSK_TUTOR_CONFIG`.
+The skill reads `~/.claude/danish-tutor/config.json`, or the file named in `DANISH_TUTOR_CONFIG`.
 Every key is optional. `skill/dansk/config.example.json` lists them all with their defaults,
 and the table in `skill/dansk/SKILL.md` says what each one does. The most important:
 

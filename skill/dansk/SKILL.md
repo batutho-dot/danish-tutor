@@ -14,7 +14,7 @@ because the format is wrong for that goal: this replaces them.
 ## Settings
 
 Read the settings file before anything else: the path in the environment variable
-`DANSK_TUTOR_CONFIG` if it is set, otherwise `~/.claude/dansk-tutor/config.json`. It is a flat
+`DANISH_TUTOR_CONFIG` if it is set, otherwise `~/.claude/danish-tutor/config.json`. It is a flat
 JSON object. Every key is optional; a missing file or key means the default below. Never ask
 the learner for a setting that has a default.
 
@@ -27,7 +27,7 @@ the learner for a setting that has a default.
 | `support_language` | `"English"` | Language of the debrief and of one word hints. |
 | `fluent_data_dir` | `"~/.claude/fluent-data"` | Where the Fluent engine keeps its JSON databases. |
 | `fluent_hooks` | `"~/.claude/plugins/cache/m98/fluent/*/.claude/hooks"` | Glob for the folder holding Fluent's `update-db.py` and `read-db.py`. |
-| `records_dir` | `"~/dansk-tutor/data"` | Word notes go in `<records_dir>/words/`, session records in `<records_dir>/sessions/`. |
+| `records_dir` | `"~/danish-tutor/data"` | Word notes go in `<records_dir>/words/`, session records in `<records_dir>/sessions/`. |
 | `speak_replies` | `false` | `true` when a text-to-speech hook already reads every reply aloud and speaks Danish lines in a Danish voice. |
 | `listen_command` | `"say -v \"Sara (Enhanced)\" -r {rate} {text}"` | Shell command that speaks one hidden sentence. `{rate}` is words per minute, `{text}` the quoted sentence. The default is the macOS `say` command with a built-in Danish voice. |
 | `listen_rate` | `150` | Speed of the first play in Phase 3. |

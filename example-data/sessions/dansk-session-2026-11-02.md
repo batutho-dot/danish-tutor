@@ -6,7 +6,7 @@ size: large
 input_mode: voice
 tags: [danish, session]
 example_data: true
-note: "Invented example data for dansk-tutor. Not a real learner's record."
+note: "Invented example data for danish-tutor. Not a real learner's record."
 ---
 
 # Danish session 2026-11-02
