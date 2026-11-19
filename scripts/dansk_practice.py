@@ -33,8 +33,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dansk_db  # noqa: E402
 import dansk_tutor  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
 RULES = ROOT / "skills" / "dansk" / "session-rules.md"
+if not RULES.is_file():                     # installed package: the rules ship as rules/
+    RULES = HERE / "rules" / "session-rules.md"
 MODES = {
     "chat": "Speaking: a casual chat (about 15 minutes)",
     "short": "Short chat (about 5 minutes)",

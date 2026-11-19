@@ -2,7 +2,7 @@
 
 <img src="docs/icon.png" alt="icon" width="120">
 
-Spoken Danish practice in a local web app: a relaxed chat with small corrections as you go, a hidden listening drill, ten new words at a time, and spaced repetition. For learners around A2 to B1. It installs as a Claude Code plugin; the tutor runs on the Anthropic API.
+Spoken Danish practice in a local web app: a relaxed chat with small corrections as you go, a hidden listening drill, ten new words at a time, and spaced repetition. For learners around A2 to B1. One install, your own Anthropic key, and the tutor runs on the Anthropic API.
 
 From the invented example data:
 
@@ -16,26 +16,23 @@ The fix becomes an error card for review.
 
 ## What you need
 
-- **Python 3.10+.** On Windows, tick "Add python.exe to PATH" in the installer.
-- **The Anthropic SDK:** `pip install anthropic`. Without it, only Practice is unavailable.
-- **An Anthropic API key** from console.anthropic.com, in the environment variable `DANISH_TUTOR_ANTHROPIC_KEY` (or `ANTHROPIC_API_KEY`, or sign in with `ant auth login`). The app never asks for it, stores it or shows it.
-- **A Danish voice** for listening: a system voice (Windows: Settings > Time & language > Language & region, add Danish with speech; macOS: System Settings > Accessibility > Spoken Content), or optionally a local text-to-speech daemon (`docs/details.md`).
-- **Edge or Chrome** for the Talk button. Typing or any dictation tool works too.
+- **Python 3.10+** (on Windows, tick "Add python.exe to PATH") and **pipx** (`python -m pip install --user pipx`, then `python -m pipx ensurepath`) or **uv**.
+- **An Anthropic API key** from console.anthropic.com. The app never asks for it, stores it or shows it.
+- **Edge or Chrome** for the Talk button. Typing works too.
 
-Node is not needed. Claude Code is only needed to install the plugin.
+Claude Code and Node are not needed.
 
 ## Install and start
 
-In Claude Code:
+1. Install: `pipx install git+https://github.com/batutho-dot/danish-tutor` (or `uv tool install` with the same URL).
+2. Set your key: Windows `setx ANTHROPIC_API_KEY "your-key"`, macOS `echo 'export ANTHROPIC_API_KEY="your-key"' >> ~/.zshrc`. Open a new terminal.
+3. Type `dansk`. The app opens in your browser (`dansk --demo` tries it on invented data).
 
-```
-/plugin marketplace add batutho-dot/danish-tutor
-/plugin install danish-tutor@danish-tutor
-```
+Voice: replies are read by your browser's Danish voice. For an offline open voice (piper, about 220 MB), install with `pipx install "danish-tutor[voice] @ git+https://github.com/batutho-dot/danish-tutor"`.
 
-Then type `/dansk`; it starts the app. Without Claude Code: `python scripts/dansk_app.py` (add `--demo` to try it on invented data).
+Cost: a measured 8-line chat on Sonnet 5.5 cost $0.06; a 15-minute session is estimated at $0.09 to $0.14.
 
-Optional settings: copy `skills/dansk/config.example.json` to `~/.claude/danish-tutor/config.json`.
+Claude Code users can also add the plugin (`/plugin marketplace add batutho-dot/danish-tutor`, `/plugin install danish-tutor@danish-tutor`) and type `/dansk`. Settings: `skills/dansk/config.example.json`.
 
 ## The app
 
@@ -50,20 +47,20 @@ Scheduling is SM-2 (Wozniak 1990), in `scripts/dansk_db.py`.
 
 ## Your data and privacy
 
-Your record is one SQLite file, `~/.claude/danish-tutor/dansk.db`, created on first start. The conversation text goes to the Anthropic API under your key. The Talk button uses your browser's speech recognition, which may send audio to the browser maker. The app listens on 127.0.0.1 only.
+Your record is one SQLite file, `~/.danish-tutor/dansk.db` (or `~/.claude/danish-tutor/` if that exists), created on first start. The conversation text goes to the Anthropic API under your key. The Talk button uses your browser's speech recognition, which may send audio to the browser maker. The app listens on 127.0.0.1 only.
 
 Coming from the Fluent plugin? Import once:
 
 ```bash
-python scripts/import_fluent.py --data <your Fluent data folder> --words <your word notes folder>
+python -m danish_tutor.import_fluent --data <your Fluent data folder> --words <your word notes folder>
 ```
 
 ## Limits
 
 - The tutor's Danish is not checked against a dictionary.
-- Listening needs a Danish voice; Windows and macOS do not always ship one.
+- Without the piper extra, listening needs a Danish browser or system voice; not every computer has one.
 - No claim about learning gains is made.
 
 ## Licence
 
-PolyForm Strict 1.0.0 (`LICENSE`): free for noncommercial use; no distributing it, and no changes or new works based on it; commercial use needs permission. Versions up to commit 9ba8b3f were released under MIT. Bundled third-party code in `app/dist` keeps its own licences (`THIRD_PARTY_NOTICES.txt` there). `example-data/` is invented. More: [docs/details.md](docs/details.md).
+PolyForm Strict 1.0.0 (`LICENSE`): free for noncommercial use; no distributing it, and no changes or new works based on it; commercial use needs permission. Versions up to commit 9ba8b3f were released under MIT. Bundled third-party code keeps its own licences (`app/dist/THIRD_PARTY_NOTICES.txt`). `example-data/` is invented. More: [docs/details.md](docs/details.md).

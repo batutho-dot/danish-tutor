@@ -128,7 +128,7 @@ export interface ItemDetail {
 
 export type ItemEdit = Partial<Record<'content' | 'answer' | 'description' | 'context' | 'category', string | null>>;
 
-export type VoiceKind = 'local' | 'system' | 'none';
+export type VoiceKind = 'local' | 'piper' | 'system' | 'none';
 
 export interface PracticeSnapshot {
   id: string;

@@ -28,7 +28,9 @@ class TempCase(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self._env = {k: os.environ.get(k) for k in
                      ("DANISH_TUTOR_CONFIG", "DANISH_TUTOR_DB", "DANSK_DATA_DIR", "DANSK_WORDS_DIR",
-                      "DANISH_TUTOR_BACKEND", "CLV_PORT", "CLV_SOCKET", "CLV_HOME")}
+                      "DANISH_TUTOR_BACKEND", "CLV_PORT", "CLV_SOCKET", "CLV_HOME",
+                      "DANISH_TUTOR_HOME")}
+        os.environ["DANISH_TUTOR_HOME"] = str(self.tmp / "home")
         os.environ["DANISH_TUTOR_CONFIG"] = str(self.tmp / "config.json")
         # Never reach a real voice daemon: point it at a port and socket nothing listens on.
         os.environ["CLV_PORT"] = str(free_port())

@@ -11,8 +11,9 @@ Common options: --db PATH (overrides DANISH_TUTOR_DB and the settings file),
 --today YYYY-MM-DD (fixed "today", for tests).
 
 Database path, first match wins: --db, the DANISH_TUTOR_DB environment variable, `db_path` in
-the settings file (DANISH_TUTOR_CONFIG or ~/.claude/danish-tutor/config.json), and finally
-~/.claude/danish-tutor/dansk.db.
+the settings file (DANISH_TUTOR_CONFIG or config.json in the data folder), and finally
+dansk.db in the data folder. The data folder is DANISH_TUTOR_HOME, else ~/.claude/danish-tutor
+when it exists, else ~/.danish-tutor.
 
 Scheduling follows SM-2 as published by P. Wozniak (1990), "SuperMemo 2: Algorithm",
 https://super-memory.com/english/ol/sm2.htm. See sm2() for the rules and our reading of them.
@@ -47,9 +48,20 @@ EF_FLOOR = 1.3
 
 # ---------------------------------------------------------------- settings and paths
 
+def data_dir() -> Path:
+    """Where the settings file and the database live by default: DANISH_TUTOR_HOME, else
+    ~/.claude/danish-tutor when it already exists (the Claude Code plugin's folder), else
+    ~/.danish-tutor."""
+    env = os.environ.get("DANISH_TUTOR_HOME")
+    if env:
+        return Path(env).expanduser()
+    plugin = Path.home() / ".claude" / "danish-tutor"
+    return plugin if plugin.is_dir() else Path.home() / ".danish-tutor"
+
+
 def config_path() -> Path:
     env = os.environ.get("DANISH_TUTOR_CONFIG")
-    return Path(env).expanduser() if env else Path.home() / ".claude" / "danish-tutor" / "config.json"
+    return Path(env).expanduser() if env else data_dir() / "config.json"
 
 
 def load_config() -> dict:
@@ -71,7 +83,7 @@ def db_path(cli: str | None = None, cfg: dict | None = None) -> Path:
     cfg = load_config() if cfg is None else cfg
     if cfg.get("db_path"):
         return Path(str(cfg["db_path"])).expanduser()
-    return Path.home() / ".claude" / "danish-tutor" / "dansk.db"
+    return data_dir() / "dansk.db"
 
 
 # ---------------------------------------------------------------- SM-2

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "danish-tutor"
+version = "0.4.0"
+description = "Spoken Danish practice in a local web app on the Anthropic API: casual chat with live corrections, a listening drill, ten new words at a time and SM-2 review."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "LicenseRef-PolyForm-Strict-1.0.0"
+license-files = ["LICENSE"]
+dependencies = ["anthropic>=2.10"]
+
+[project.optional-dependencies]
+voice = ["piper-tts>=1.8"]
+
+[project.scripts]
+dansk = "danish_tutor.dansk_app:main"
+
+[project.urls]
+Homepage = "https://github.com/batutho-dot/danish-tutor"
+
+[tool.setuptools]
+packages = ["danish_tutor", "danish_tutor.dist", "danish_tutor.rules", "danish_tutor.example"]
+
+[tool.setuptools.package-dir]
+"danish_tutor" = "scripts"
+"danish_tutor.dist" = "app/dist"
+"danish_tutor.rules" = "skills/dansk"
+"danish_tutor.example" = "example-data"
+
+[tool.setuptools.package-data]
+"danish_tutor.dist" = ["*.html", "*.png", "*.txt", "assets/*"]
+"danish_tutor.rules" = ["session-rules.md", "config.example.json"]
+"danish_tutor.example" = ["*.json", "*.md", "sessions/*", "words/*"]

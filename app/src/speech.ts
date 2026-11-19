@@ -13,7 +13,7 @@ export const NO_VOICE_HELP =
   'Accessibility > Spoken Content > System voice > Manage Voices), or run a local voice daemon. ' +
   'Then reload this page.';
 
-export type VoiceName = 'Local voice' | 'System voice' | 'Browser voice' | 'none';
+export type VoiceName = 'Local voice' | 'Piper voice' | 'System voice' | 'Browser voice' | 'none';
 
 function browserVoice(): SpeechSynthesisVoice | null {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
@@ -75,7 +75,7 @@ export async function speakDanish(
       if (opts.onEnd) {
         window.setTimeout(opts.onEnd, estimateSeconds(clean, opts.slow) * 1000);
       }
-      return r.voice === 'local' ? 'Local voice' : 'System voice';
+      return r.voice === 'local' ? 'Local voice' : r.voice === 'piper' ? 'Piper voice' : 'System voice';
     } catch {
       serverVoice = Promise.resolve('none');
     }
@@ -113,6 +113,14 @@ export function useVoice(): {name: VoiceName; ready: boolean} {
   }, []);
 
   const name: VoiceName =
-    server === 'local' ? 'Local voice' : server === 'system' ? 'System voice' : browser ? 'Browser voice' : 'none';
+    server === 'local'
+      ? 'Local voice'
+      : server === 'piper'
+        ? 'Piper voice'
+        : server === 'system'
+          ? 'System voice'
+          : browser
+            ? 'Browser voice'
+            : 'none';
   return {name, ready: server !== null};
 }

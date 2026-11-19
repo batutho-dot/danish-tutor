@@ -14,6 +14,9 @@ too, --voice wins):
                 CLV_PORT (default 47821). macOS and Linux: the Unix socket CLV_SOCKET (default
                 CLV_HOME/voice.sock, CLV_HOME default ~/.claude-local-voice). The daemon sets
                 its own pace, so --rate does not apply to it.
+  piper         the open piper voice da_DK-talesyntese-medium, only when the optional piper-tts
+                package is installed (`pip install "danish-tutor[voice]"`). The voice file
+                (about 63 MB) is downloaded once into <data folder>/voices on first use.
   system        macOS `say` with "Sara (Enhanced)", or else any installed voice listed as
                 da_DK by `say -v '?'`. Windows: PowerShell with System.Speech, using an
                 installed voice whose culture starts with "da". Linux: `espeak-ng -v da`.
@@ -28,7 +31,7 @@ The sentence never reaches a shell: it goes to the speech program on standard in
 with argument lists only. It is never printed or logged.
 
 Exit codes: 0 spoken (or stopped), 1 bad arguments, 3 no Danish voice found, 4 the speech
-program failed. Standard library only.
+program failed. Standard library only, apart from the optional piper-tts.
 """
 from __future__ import annotations
 
@@ -47,7 +50,8 @@ from pathlib import Path
 PREFERRED_MAC_VOICE = "Sara (Enhanced)"
 DAEMON_PORT = 47821
 DAEMON_TIMEOUT = 1.5
-VOICES = ("auto", "local-daemon", "system")
+VOICES = ("auto", "local-daemon", "piper", "system")
+PIPER_VOICE = "da_DK-talesyntese-medium"   # open voice, dataset licence CC0 (its MODEL_CARD)
 
 HELP_VOICE = {
     "Darwin": "no Danish voice found: open System Settings > Accessibility > Spoken Content > "
@@ -184,6 +188,92 @@ def stop_daemon() -> bool:
     return daemon_send({"stop": True})
 
 
+# ---------------------------------------------------------------- piper (optional)
+
+_PIPER: dict = {"voice": None}
+PLAY_WINDOWS = "import sys, winsound; winsound.PlaySound(sys.argv[1], winsound.SND_FILENAME)"
+
+
+def piper_installed() -> bool:
+    import importlib.util
+    return importlib.util.find_spec("piper") is not None
+
+
+def piper_model() -> Path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import dansk_db
+    return dansk_db.data_dir() / "voices" / f"{PIPER_VOICE}.onnx"
+
+
+def piper_ready() -> bool:
+    m = piper_model()
+    return piper_installed() and m.is_file() and m.with_suffix(".onnx.json").is_file()
+
+
+def fetch_piper_voice() -> bool:
+    """Download the voice once (about 63 MB). Files land in a temporary folder first, so an
+    interrupted download never leaves a broken voice behind."""
+    if not piper_installed():
+        return False
+    if piper_ready():
+        return True
+    import tempfile
+    from piper.download_voices import download_voice
+    target = piper_model().parent
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(dir=target) as tmp:
+            download_voice(PIPER_VOICE, Path(tmp))
+            for suffix in (".onnx.json", ".onnx"):
+                os.replace(Path(tmp) / f"{PIPER_VOICE}{suffix}", target / f"{PIPER_VOICE}{suffix}")
+    except Exception:
+        return False
+    return piper_ready()
+
+
+def piper_wav(text: str, out: Path, slow: bool = False) -> bool:
+    """Write the sentence as a wav file with piper. False when piper is not ready."""
+    if not piper_ready():
+        return False
+    import wave
+    from piper import PiperVoice
+    from piper.config import SynthesisConfig
+    if _PIPER["voice"] is None:
+        _PIPER["voice"] = PiperVoice.load(str(piper_model()))
+    cfg = SynthesisConfig(length_scale=1.25 if slow else 1.0)
+    with wave.open(str(out), "wb") as w:
+        _PIPER["voice"].synthesize_wav(text, w, syn_config=cfg)
+    return True
+
+
+def player_command(path: Path) -> list[str] | None:
+    """A command that plays a wav file and can be stopped by killing it."""
+    system = platform.system()
+    if system == "Windows":
+        return [sys.executable, "-c", PLAY_WINDOWS, str(path)]
+    if system == "Darwin":
+        return ["afplay", str(path)]
+    for player in ("paplay", "aplay"):
+        if shutil.which(player):
+            return [player, str(path)]
+    return None
+
+
+def speak_piper(text: str, slow: bool = False) -> int:
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = Path(tmp) / "say.wav"
+        if not piper_wav(text, wav, slow):
+            return 3
+        cmd = player_command(wav)
+        if cmd is None:
+            return 3
+        try:
+            return 0 if subprocess.run(cmd, timeout=120).returncode == 0 else 4
+        except (OSError, subprocess.TimeoutExpired):
+            return 4
+
+
 # ---------------------------------------------------------------- system voice
 
 def mac_voice() -> str | None:
@@ -275,9 +365,11 @@ def configured_voice() -> str:
 
 
 def available(voice: str = "auto") -> str:
-    """Which voice would speak: "local", "system" or "none"."""
+    """Which voice would speak: "local", "piper", "system" or "none"."""
     if voice in ("auto", "local-daemon") and (daemon_up() or daemon_start_command()):
         return "local"
+    if voice in ("auto", "piper") and piper_ready():
+        return "piper"
     if voice in ("auto", "system") and system_voice_available():
         return "system"
     return "none"
@@ -288,6 +380,10 @@ def speak(text: str, wpm: int, voice: str = "auto") -> int:
     if voice in ("auto", "local-daemon") and speak_daemon(text):
         return 0
     if voice == "local-daemon":
+        return 3
+    if voice in ("auto", "piper") and piper_ready():
+        return speak_piper(text, slow=wpm < 140)
+    if voice == "piper":
         return 3
     return speak_system(text, wpm)
 
@@ -304,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
         pass
     ap = argparse.ArgumentParser(description="Speak one Danish sentence (hidden listening drill)")
     ap.add_argument("--rate", type=int, default=150, help="words per minute (default 150)")
-    ap.add_argument("--voice", choices=VOICES, help="auto (default), local-daemon or system")
+    ap.add_argument("--voice", choices=VOICES, help="auto (default), local-daemon, piper or system")
     ap.add_argument("--stop", action="store_true", help="stop what the local daemon is playing")
     ap.add_argument("text", nargs="?", default="", help="the Danish sentence")
     try:

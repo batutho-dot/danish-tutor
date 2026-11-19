@@ -22,9 +22,9 @@
 
 ## Settings
 
-The scripts read `~/.claude/danish-tutor/config.json`, or the file named in `DANISH_TUTOR_CONFIG`. Every key is optional; `skills/dansk/config.example.json` lists them all. The scripts use:
+The scripts read `config.json` in the data folder, or the file named in `DANISH_TUTOR_CONFIG`. The data folder is `DANISH_TUTOR_HOME` if set, else `~/.claude/danish-tutor` when it exists (the plugin's older folder), else `~/.danish-tutor`. Every key is optional; `skills/dansk/config.example.json` lists them all. The scripts use:
 
-- `db_path`: the database file. Default `~/.claude/danish-tutor/dansk.db`. `DANISH_TUTOR_DB` overrides it, and `--db` overrides both.
+- `db_path`: the database file. Default `dansk.db` in the data folder. `DANISH_TUTOR_DB` overrides it, and `--db` overrides both.
 - `notes_dir`: empty by default (off). When set, `record` also writes markdown word notes to `<notes_dir>/words/` and a session record to `<notes_dir>/sessions/` after the database commit, in the format below.
 - `level`, `target_level`, `support_language`: copied to the learner row when a session is recorded; also given to the tutor.
 - `learner_name`, `goal`: given to the tutor. `goal` also picks the three topic suggestions for "Learn 10 new words".
@@ -240,3 +240,35 @@ to the command that starts yours (a list of arguments, `~` allowed), for example
 `["python", "~/path/to/start-server.py"]`. The app then starts it when it opens, and `speak.py`
 starts it before speaking if it is not running, waiting up to 20 seconds for it to listen. A
 Danish model can need more time on its first sentence after a start.
+
+## The installable package
+
+`pyproject.toml` builds one package, `danish_tutor`, from `scripts/`, with the built app (`app/dist`), the session rules (`skills/dansk`) and the example data inside it, and a `dansk` command that runs `dansk_app.main`. The Claude Code plugin is a thin launcher for the same app. The scripts find their files in the repository layout first and in the package layout otherwise.
+
+The key: `DANISH_TUTOR_ANTHROPIC_KEY` if set, else whatever the Anthropic SDK finds (`ANTHROPIC_API_KEY`, or a login).
+
+### Voice order
+
+1. A local text-to-speech daemon, when one answers or `voice_daemon_start` is set.
+2. piper with the open voice `da_DK-talesyntese-medium`, only when the optional extra is installed (`danish-tutor[voice]`, piper-tts 1.8 or newer). The voice is downloaded once into `<data folder>/voices` on the first start; until it is there the next voice speaks. Its model card gives the dataset licence as CC0 and the dataset as Språkbanken (nb.no, oai-nb-no-sbr-21).
+3. The system voice (`say`, Windows speech, espeak-ng).
+4. In the app, the browser's Danish voice.
+
+Measured on one Windows desktop CPU with Python 3.13:
+
+- Install size in a fresh venv: 64 MB without the extra, 221 MB with it (so piper and its libraries add about 157 MB), plus the voice file, 63,201,294 bytes, fetched in 7 s on this connection.
+- Speed: one 115-character sentence, 3 runs through the piper command: about 7.1 s of speech in 1.31 to 1.40 s each, voice loading included. Inside the app the voice stays loaded: 1.85 s of speech took 0.68 s on the first call and 0.06 s for the next sentence.
+
+### Cost
+
+Prices from the Claude pricing page (2026-11-19), Sonnet 5.5 per million tokens: input $2, output $10, 5-minute cache write $2.50, cache read $0.10.
+
+One scripted chat (start, 8 learner lines, end and save) on invented data, measured with the API's own usage counts:
+
+| | input | cache write | cache read | output | cost |
+|---|---|---|---|---|---|
+| system prompt cached only | 13,416 | 6,008 | 60,080 | 2,686 | $0.075 |
+| conversation cached too (now) | 44 | 11,435 | 69,641 | 2,828 | $0.064 |
+
+The 15-minute figure in the README is an estimate, not a measurement: 15 to 30 learner lines, about 250 new tokens of conversation and 200 output tokens per line (rounded averages of the two runs above), plus the same start and save, gives about $0.09 to $0.14 with the conversation cached, and about $0.13 to $0.33 without.
+

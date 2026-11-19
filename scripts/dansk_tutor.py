@@ -13,7 +13,7 @@ Model claude-sonnet-5-5, streamed with `client.beta.messages.stream` so the serv
 refusal fallback can be switched on (`fallbacks="default"`, beta
 server-side-fallback-2026-07-01). Effort is "low" for conversational turns and "medium" for
 the end-of-session payload. The system prompt is one cached block (it is the same for every
-turn of a session). `stop_reason` is checked before the reply is used: a refusal discards
+turn of a session), and the conversation so far is cached too (cache_history). `stop_reason` is checked before the reply is used: a refusal discards
 the turn.
 
 A backend is any object with `status() -> dict` and
@@ -53,6 +53,24 @@ def echo_content(blocks: list[dict]) -> list[dict]:
         return blocks
     drop = {"thinking", "redacted_thinking", "tool_use", "server_tool_use"}
     return [b for i, b in enumerate(blocks) if i >= last or b.get("type") not in drop]
+
+
+def cache_history(messages: list[dict]) -> list[dict]:
+    """A copy of the messages whose last block carries a cache breakpoint, so each turn reads
+    the conversation so far from the cache instead of paying the full input price for it
+    again. The stored history is never changed."""
+    if not messages:
+        return messages
+    last = dict(messages[-1])
+    content = last.get("content")
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}]
+    if not content:
+        return messages
+    content = [dict(b) for b in content]
+    content[-1]["cache_control"] = {"type": "ephemeral"}
+    last["content"] = content
+    return messages[:-1] + [last]
 
 
 class AnthropicBackend:
@@ -99,7 +117,7 @@ class AnthropicBackend:
                 betas=[FALLBACK_BETA],
                 fallbacks="default",
                 system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                messages=messages,
+                messages=cache_history(messages),
                 output_config={"effort": effort},
             ) as stream:
                 for event in stream:

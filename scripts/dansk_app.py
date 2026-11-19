@@ -4,7 +4,7 @@
     python dansk_app.py [--db PATH] [--port N] [--no-browser] [--demo] [--today YYYY-MM-DD]
 
 Database path, first match wins: --db, DANISH_TUTOR_DB, `db_path` in the settings file, then
-~/.claude/danish-tutor/dansk.db (the same lookup as dansk_db.py); a missing one is created
+dansk.db in the data folder (the same lookup as dansk_db.py); a missing one is created
 empty on the first run. --demo imports the invented
 example-data into a fresh temporary database, serves that, and deletes it on exit; its "today"
 is 2026-11-06 unless --today is given, so the example dates look current.
@@ -54,9 +54,12 @@ import dansk_db  # noqa: E402
 import dansk_practice  # noqa: E402
 import speak  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent
-DIST = ROOT / "app" / "dist"
-EXAMPLE = ROOT / "example-data"
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+# In the repository the files sit in app/dist and example-data; an installed package
+# (pipx/uv/pip) carries them inside the package as dist/ and example/.
+DIST = ROOT / "app" / "dist" if (ROOT / "app" / "dist").is_dir() else HERE / "dist"
+EXAMPLE = ROOT / "example-data" if (ROOT / "example-data").is_dir() else HERE / "example"
 DEFAULT_PORT = 8765
 DEMO_TODAY = "2026-11-06"
 TOKEN_PLACEHOLDER = "__DANSK_TOKEN__"
@@ -82,7 +85,8 @@ class Unavailable(Exception):
     """No voice: becomes a 503 with this message."""
 
 
-VOICE_LABELS = {"local": "Local voice", "system": "System voice", "none": "none"}
+VOICE_LABELS = {"local": "Local voice", "piper": "Piper voice", "system": "System voice",
+                "none": "none"}
 VOICE_TTL = 60
 MAX_SPEAK = 1000
 POLL_SECONDS = 20
@@ -103,6 +107,8 @@ class Api:
         self.system_cache: tuple[float, bool] | None = None
         self.speech_proc = None
         self.speech_lock = threading.Lock()
+        self.speech_n = 0
+        self.speech_dir: Path | None = None       # piper's wav files, made on first use
 
     def today(self) -> str:
         return self.fixed_today or date.today().isoformat()
@@ -335,7 +341,7 @@ class Api:
                 con.close()
         return {"deleted": n}
 
-    # ---- voice: speak.py's local daemon first, then the system voice
+    # ---- voice: speak.py's local daemon first, then piper (optional), then the system voice
 
     def voice_setting(self) -> str:
         v = str(self.cfg.get("voice") or "auto")
@@ -354,6 +360,8 @@ class Api:
             if setting in ("auto", "local-daemon") and (speak.daemon_up()
                                                          or speak.daemon_start_command()):
                 v = "local"
+            elif setting in ("auto", "piper") and speak.piper_ready():
+                v = "piper"
             elif setting in ("auto", "system") and self.system_ok():
                 v = "system"
             else:
@@ -380,6 +388,24 @@ class Api:
         if setting in ("auto", "local-daemon") and speak.speak_daemon(text):
             self.voice_cache = (time.monotonic(), "local")
             return {"voice": "local"}
+        if setting in ("auto", "piper") and speak.piper_ready():
+            with self.speech_lock:
+                if self.speech_dir is None:
+                    self.speech_dir = Path(tempfile.mkdtemp(prefix="dansk-voice-"))
+                self.speech_n += 1
+                wav = self.speech_dir / f"say-{self.speech_n % 4}.wav"
+            try:
+                ok = speak.piper_wav(text, wav, slow)
+            except Exception:
+                ok = False
+            cmd = speak.player_command(wav) if ok else None
+            if cmd is not None:
+                self.stop_system_speech()
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with self.speech_lock:
+                    self.speech_proc = proc
+                self.voice_cache = (time.monotonic(), "piper")
+                return {"voice": "piper"}
         if setting in ("auto", "system") and self.system_ok():
             default = 130 if slow else 150
             try:
@@ -794,6 +820,10 @@ def main(argv: list[str] | None = None) -> int:
         print("  Ctrl+C stops it")
         if not a.no_browser:
             threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+        if speak.piper_installed() and not speak.piper_ready():
+            print("  downloading the Danish piper voice once (about 63 MB); "
+                  "the browser voice speaks until it is ready")
+            threading.Thread(target=speak.fetch_piper_voice, daemon=True).start()
         if speak.daemon_start_command() and not speak.daemon_up():
             # Start the local voice daemon now, so the first reply does not wait for it.
             print("  starting the local voice daemon")
