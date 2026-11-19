@@ -1,0 +1,8 @@
+{
+  "name": "danish-tutor",
+  "version": "0.2.0",
+  "description": "Spoken Danish practice in Claude Code: a 15 minute conversation, a hidden listening drill, SM-2 spaced repetition and a local SQLite store.",
+  "author": {"name": "Batu Thoms"},
+  "license": "MIT",
+  "keywords": ["danish", "language-learning", "spaced-repetition", "sm-2", "listening", "speaking"]
+}

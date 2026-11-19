@@ -1,81 +1,100 @@
 # danish-tutor
 
-A Claude Code skill that runs a 15 minute spoken Danish practice session with hidden listening drills, silent spaced repetition and error logging, plus a local dashboard that shows the word bank and review queue.
+A Claude Code plugin for spoken Danish practice: a 15 minute conversation, a hidden listening drill, and spaced repetition that remembers what you learned.
+For learners around A2 to B1 who want to speak and listen, not fill in drills.
 
-**Result:** no benchmark exists for this tool. `python verify.py` checks that the scripts compile, the skill's frontmatter is valid, the dashboard builds from the invented example data with the expected words and due dates, and no file holds personal paths, names, keys or audio.
+From the invented example session (English in brackets):
 
-## Run it
-
-Install the skill into Claude Code:
-
-```bash
-mkdir -p ~/.claude/skills && cp -r skill/dansk ~/.claude/skills/dansk
+```
+Tutor:   Hej! Hvad har du lyst til at tale om i dag?   (Hi! What would you like to talk about today?)
+Learner: Morgenmad og at købe ind.                     (Breakfast and shopping.)
+Tutor:   Hvad spiser du til morgenmad?                 (What do you eat for breakfast?)
+Learner: Brød, men ikke i dag, fordi jeg har ikke tid. (Bread, but not today, because I don't have time.)
+Tutor:   Nå, så har du travlt i dag?                   (Oh, so you're busy today?)
+Learner: Ja, og jeg har glemt min nøgle.               (Yes, and I have forgotten my key.)
 ```
 
-Optional settings (name, level, goal, support language, folders, listening voice):
+The word order slip ("har ikke" should be "ikke har") is logged silently and comes back in the debrief and in later sessions.
 
-```bash
-mkdir -p ~/.claude/danish-tutor && cp skill/dansk/config.example.json ~/.claude/danish-tutor/config.json
+## What you need
+
+- Claude Code
+- Python 3.10 or newer
+- A Danish text-to-speech voice for the listening drill
+- Microphone dictation (optional; typing works too)
+
+No other plugin.
+
+## Install
+
+In Claude Code:
+
+```
+/plugin marketplace add batutho-dot/danish-tutor
+/plugin install danish-tutor@danish-tutor
 ```
 
-Build the dashboard on the invented example data (it prints the page's path):
+Then type `/dansk` (`/dansk kort` for 5 minutes, `/dansk lyt` for listening only).
+
+Optional settings (name, level, goal, support language, voice speed). macOS or Linux:
 
 ```bash
-python dashboard/build_dashboard.py --data example-data
+mkdir -p ~/.claude/danish-tutor
+cp skills/dansk/config.example.json ~/.claude/danish-tutor/config.json
 ```
 
-Build it on your own records:
+Windows (PowerShell):
 
-```bash
-python dashboard/build_dashboard.py --data ~/.claude/fluent-data --words ~/danish-tutor/data/words
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.claude\danish-tutor"
+Copy-Item skills\dansk\config.example.json "$HOME\.claude\danish-tutor\config.json"
 ```
 
-Check the repository:
-
-```bash
-python verify.py
-```
-
-Then type `/dansk` in Claude Code (`/dansk kort` for 5 minutes, `/dansk lyt` for listening only).
+Run these from a copy of this repository.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-  A[Read due items and error patterns] --> B[Learner picks a topic]
+  A[dansk_db.py due: due items and error patterns] --> B[Learner picks a topic]
   B --> C[Conversation in Danish, errors logged silently]
-  C --> D[Hidden listening drill]
+  C --> D[Hidden listening drill, speak.py]
   D --> E[Debrief in the support language]
-  E --> F[Write back: word notes, session record, update-db.py]
-  F --> G[Rebuild dashboard]
+  E --> F[One dansk_db.py record call into SQLite]
+  F --> G[Optional: rebuild dashboard]
 ```
 
-The skill reads the review queue, then weaves 6 to 8 due items into a conversation on the learner's topic. Corrections wait until the debrief. Listening sentences are spoken by a text-to-speech command and never shown before the learner answers. Afterwards the skill writes word notes and a session record, and hands review results and errors to the Fluent engine, which schedules the next reviews with SM-2. The dashboard is a static page built from those files.
+Due items are woven into a conversation on your topic. Corrections wait until the debrief. Listening sentences are spoken, never shown before you answer. One `record` call saves everything in a single transaction and prints a line like `saved session-2026-11-02, 6 reviews, 3 new words, 1 errors; 9 items due tomorrow`. If the save fails, the skill says so and keeps the payload in a temp file.
 
-## Results
+Scheduling is SM-2 (Wozniak 1990), implemented in `scripts/dansk_db.py`.
 
-A session writes three things. Shown here on the invented example data:
+## Your data
 
-- A word note per new word, `words/noegle.md`: forms (`en nøgle, nøglen, nøgler, nøglerne`), Danish definition, example sentence, gloss (`key`).
-- A session record, `sessions/dansk-session-2026-11-02.md`: topic, errors by category, listening sentences scored `understood_fully`, `gist_only` or `missed`, new words, time.
-- One `update-db.py` call: review qualities, errors, new vocabulary.
+One SQLite file, `~/.claude/danish-tutor/dansk.db`. It stays on your machine; git never sees it. Coming from the Fluent plugin? Import once:
 
-On the invented example data the dashboard prints:
+```bash
+python scripts/import_fluent.py --data <your Fluent data folder> --words <your word notes folder>
+```
+
+## Dashboard
+
+```bash
+python dashboard/build_dashboard.py
+```
+
+It prints the path of a static page with your word bank and review queue. On the invented example data (`--data example-data --today 2026-11-06`) it prints:
 
 ```
 13 word notes, 1 grammar notes, 16 tracked items, 15 due on 2026-11-06
 ```
 
-These numbers describe the invented files, not a learner's progress. No claim about learning gains is made.
-
 ## Limits
 
-- Speech output needs a separate text-to-speech tool. The default listening command is the macOS `say` command; elsewhere, set `listen_command` or show the sentences as text.
-- Scheduling depends on the third-party Fluent plugin's `update-db.py`, which is not included.
-- Built for one learner's setup; other setups may need changes.
-- Spoken input relies on the operating system's dictation.
 - The Danish the model produces is not checked against a dictionary.
+- The listening drill needs an installed Danish voice; Windows and macOS do not always ship one.
+- SQLite only for now. The SQL is kept portable, so PostgreSQL could be added later.
+- No claim about learning gains is made.
 
-## Data and licence
+## Licence
 
-Code and documentation: MIT, see `LICENSE`. Everything in `example-data/` is invented. Keep your own records in `data/`, which git ignores. The SM-2 engine and database writer come from the Fluent Claude Code plugin (marketplace `m98`); no Fluent files are copied here and its licence was not reviewed for this repository, so check it before you install it. More detail: [docs/details.md](docs/details.md).
+MIT, see `LICENSE`. Everything in `example-data/` is invented. More detail: [docs/details.md](docs/details.md).

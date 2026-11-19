@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""Build a static Danish practice dashboard from a word bank and the spaced-repetition files.
+"""Build a static Danish practice dashboard from the danish-tutor database, or from
+Fluent-format JSON files and a folder of word notes.
 
-Reads, from one data folder:
+Database mode (the default):
+  python dashboard/build_dashboard.py                 the configured database
+  python dashboard/build_dashboard.py --db dansk.db   a given database file
+The database path follows scripts/dansk_db.py: --db, DANISH_TUTOR_DB, `db_path` in the
+settings file, then ~/.claude/danish-tutor/dansk.db.
+
+JSON mode (--data DIR, or the DANSK_DATA_DIR environment variable):
   <data>/spaced-repetition.json   SM-2 items and the review queue
   <data>/learner-profile.json     level, target level, streak, practice minutes
   <data>/progress-db.json         overall session count and accuracy
   <data>/session-log.json         one entry per session
-  <words>/*.md                    one note per word or grammar rule (default <data>/words)
+  <words>/*.md                    one note per word or grammar rule (default <data>/words,
+                                  or DANSK_WORDS_DIR)
+  python dashboard/build_dashboard.py --data example-data
 
 Writes one self-contained HTML file (default: dansk-dashboard.html in the system temp folder).
-
-Usage:
-  python dashboard/build_dashboard.py --data example-data
-  python dashboard/build_dashboard.py --data ~/.claude/fluent-data --words ~/danish-tutor/data/words --out dash.html
-
-The data folder can also come from the DANSK_DATA_DIR environment variable, and the word
-folder from DANSK_WORDS_DIR. Nothing is sent anywhere: the page is built locally and opened
-from disk.
+Nothing is sent anywhere: the page is built locally and opened from disk.
 """
 from __future__ import annotations
 
@@ -24,21 +26,19 @@ import argparse
 import json
 import os
 import re
+import sys
 import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 TEMPLATE = Path(__file__).resolve().parent / "dashboard.template.html"
-DEFAULT_DATA = Path.home() / ".claude" / "fluent-data"
+SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
 
-# Item ids in the spaced-repetition file are written without Danish letters
-# (vocab_noegle for noegle), so both sides are folded the same way before matching.
-FOLD = str.maketrans({"æ": "ae", "ø": "oe", "å": "aa", "Æ": "ae", "Ø": "oe", "Å": "aa"})
-ARTICLE = re.compile(r"^(at|en|et)\s+")
-
-
-def fold(s: str) -> str:
-    return s.translate(FOLD).lower().replace(" ", "_").replace("-", "_")
+# Folding, note parsing and the item-id rules live in scripts/dansk_text.py, shared with the
+# database script and the importer. fold and read_words stay importable from here.
+from dansk_text import ARTICLE, fold, read_words, section, split_frontmatter  # noqa: E402,F401
 
 
 def load_json(folder: Path, name: str) -> dict:
@@ -50,86 +50,6 @@ def load_json(folder: Path, name: str) -> dict:
     except (json.JSONDecodeError, OSError):
         return {}
     return data if isinstance(data, dict) else {}
-
-
-def split_frontmatter(text: str) -> tuple[dict, str]:
-    """Parse the leading --- block. Flat scalars and [a, b] lists only, which is all the
-    word notes use. Returns ({}, text) when there is no frontmatter."""
-    if not text.startswith("---"):
-        return {}, text
-    end = text.find("\n---", 3)
-    if end == -1:
-        return {}, text
-    raw, body = text[3:end], text[end + 4:]
-    meta: dict = {}
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or ":" not in line:
-            continue
-        key, _, val = line.partition(":")
-        key, val = key.strip(), val.strip()
-        if val.startswith("[") and val.endswith("]"):
-            meta[key] = [v.strip().strip("'\"") for v in val[1:-1].split(",") if v.strip()]
-        else:
-            v = val.strip("'\"")
-            meta[key] = None if v in ("null", "~", "") else v
-    return meta, body
-
-
-def section(body: str, *headings: str) -> str:
-    """Text under the first '## <heading>' found, up to the next heading."""
-    for heading in headings:
-        m = re.search(rf"^##\s+{re.escape(heading)}\s*$", body, re.M)
-        if not m:
-            continue
-        rest = body[m.end():]
-        nxt = re.search(r"^##\s+", rest, re.M)
-        return (rest[:nxt.start()] if nxt else rest).strip()
-    return ""
-
-
-def read_words(folder: Path) -> list[dict]:
-    if not folder.is_dir():
-        return []
-    out = []
-    for p in sorted(folder.glob("*.md")):
-        if p.stem.lower() in ("index", "readme"):
-            continue
-        meta, body = split_frontmatter(p.read_text(encoding="utf-8"))
-        kind = (meta.get("type") or "").strip()
-        if kind not in ("word", "grammar"):
-            continue
-
-        h = re.search(r"^#\s+(.+)$", body, re.M)
-        headword = h.group(1).strip() if h else (meta.get("title") or p.stem)
-
-        # The bold line straight after the heading holds the inflection forms.
-        forms = ""
-        if h:
-            b = re.match(r"\*\*(.+?)\*\*", body[h.end():].lstrip("\n"))
-            if b:
-                forms = b.group(1).strip()
-
-        examples = [
-            re.sub(r"\(\[\[.*?\]\]\)", "", ln).strip(" -*\t").strip()
-            for ln in section(body, "Eksempler").splitlines()
-            if ln.strip().startswith(("-", "*"))
-        ]
-        out.append({
-            "kind": kind,
-            "file": p.name,
-            "head": headword,
-            "forms": forms,
-            "da": " ".join(section(body, "På dansk", "Reglen").split()),
-            "gloss": " ".join(section(body, "Gloss").split()),
-            "ex": [e for e in examples if e][:3],
-            "pos": meta.get("pos") or "",
-            "gender": meta.get("gender") or "",
-            "level": meta.get("level") or "",
-            "learned": meta.get("learned") or "",
-            "example_data": str(meta.get("example_data") or "").lower() == "true",
-        })
-    return out
 
 
 def attach_sm2(words: list[dict], sr: dict, today: date) -> None:
@@ -259,41 +179,146 @@ def build_data(data_dir: Path, words_dir: Path, today: date) -> dict:
     }
 
 
-def build_page(data_dir: Path, words_dir: Path, out: Path, today: date) -> dict:
-    data = build_data(data_dir, words_dir, today)
+def db_records(db_file: Path) -> tuple[list[dict], dict, dict, dict, dict]:
+    """Read the database into the same shapes the JSON mode reads:
+    (words, spaced-repetition, progress, learner profile, session log)."""
+    import dansk_db
+
+    con = dansk_db.connect(db_file)
+    try:
+        learner = dansk_db.get_learner(con)
+        example = dansk_db.get_meta(con, "example_data") == "true"
+        rows = dansk_db.all_rows(con, "words")
+        examples: dict[int, list[str]] = {}
+        for e in dansk_db.all_rows(con, "examples"):
+            examples.setdefault(e["word_id"], []).append(e["sentence"])
+        items = dansk_db.all_rows(con, "items")
+        sessions = dansk_db.all_rows(con, "sessions")
+    finally:
+        con.close()
+
+    words = [{
+        "kind": w["kind"], "file": "", "head": w["headword"], "forms": w["forms"] or "",
+        "da": w["definition"] or "", "gloss": w["gloss"] or "",
+        "ex": examples.get(w["id"], [])[:3], "pos": w["pos"] or "", "gender": w["gender"] or "",
+        "level": w["level"] or "", "learned": w["learned"] or "", "example_data": example,
+    } for w in rows]
+    sr = {"items": {i["id"]: {
+        "id": i["id"], "type": i["kind"], "content": i["content"], "answer": i["answer"],
+        "category": i["category"], "due_date": i["due_date"], "mastery_level": i["mastery_level"],
+        "total_reviews": i["total_reviews"], "easiness_factor": i["easiness_factor"],
+    } for i in items}}
+    log = {"sessions": [{
+        "session_id": s["id"], "date": s["date"], "duration_minutes": s["duration_minutes"],
+        "size": s["size"], "skills_practiced": json.loads(s["skills"] or "[]"),
+        "accuracy": s["accuracy"], "notes": s["summary"] or s["topic"] or "",
+    } for s in sessions]}
+    accs = [s["accuracy"] for s in sessions if s["accuracy"] is not None]
+    progress = {"overall_stats": {
+        "total_sessions": len(sessions),
+        "accuracy_rate": round(sum(accs) / len(accs), 2) if accs else None}}
+
+    def skill_minutes(skill: str) -> int:
+        return sum(int(s["duration_minutes"] or 0) for s in log["sessions"]
+                   if skill in s["skills_practiced"])
+
+    profile = {
+        "learner": {"current_level": learner.get("level"),
+                    "target_level": learner.get("target_level"),
+                    "native_language": learner.get("support_language")},
+        "current_streak_days": streak(sorted({s["date"] for s in sessions})),
+        "skills": {"speaking": {"total_practice_time": skill_minutes("speaking")},
+                   "listening": {"total_practice_time": skill_minutes("listening")}},
+    }
+    if example:
+        sr["_note"] = profile["_note"] = "Invented example data."
+    return words, sr, progress, profile, log
+
+
+def streak(days: list[str]) -> int:
+    """Consecutive days with a session, counted back from the latest one."""
+    if not days:
+        return 0
+    n, cur = 1, date.fromisoformat(days[-1])
+    for d in reversed(days[:-1]):
+        if date.fromisoformat(d) == cur - timedelta(days=1):
+            n, cur = n + 1, cur - timedelta(days=1)
+        else:
+            break
+    return n
+
+
+def build_data_db(db_file: Path, today: date) -> dict:
+    """Database mode: the same dict build_data() returns, built from the SQLite file."""
+    words, sr, progress, profile, sessions = db_records(db_file)
+    attach_sm2(words, sr, today)
+    return {
+        "words": words,
+        "stats": build_stats(words, sr, progress, profile, sessions, today),
+        "patterns": build_patterns(sr, today),
+        "sessions": build_sessions(sessions),
+    }
+
+
+def write_page(data: dict, out: Path) -> None:
     blob = json.dumps(data, ensure_ascii=False)
     # A word note could hold "</script>"; escape the slash so it cannot close the tag.
     blob = blob.replace("</", "<\\/")
     page = TEMPLATE.read_text(encoding="utf-8").replace("/*__DATA__*/null", blob)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")
+
+
+def build_page(data_dir: Path, words_dir: Path, out: Path, today: date) -> dict:
+    data = build_data(data_dir, words_dir, today)
+    write_page(data, out)
     return data
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--data", help="folder with the JSON files (or DANSK_DATA_DIR)")
-    ap.add_argument("--words", help="folder with the word notes (or DANSK_WORDS_DIR; default <data>/words)")
+    ap.add_argument("--db", help="database file (default: the configured database)")
+    ap.add_argument("--data", help="JSON mode: folder with the JSON files (or DANSK_DATA_DIR)")
+    ap.add_argument("--words", help="JSON mode: folder with the word notes "
+                                    "(or DANSK_WORDS_DIR; default <data>/words)")
     ap.add_argument("--out", help="HTML file to write (default: system temp folder)")
     ap.add_argument("--today", help="treat this YYYY-MM-DD as today (for tests)")
     a = ap.parse_args(argv)
 
-    data_dir = Path(a.data or os.environ.get("DANSK_DATA_DIR") or DEFAULT_DATA).expanduser()
-    words_dir = Path(a.words or os.environ.get("DANSK_WORDS_DIR") or data_dir / "words").expanduser()
+    if a.db and a.data:
+        print("pass either --db or --data, not both")
+        return 1
     out = Path(a.out).expanduser() if a.out else Path(tempfile.gettempdir()) / "dansk-dashboard.html"
     today = date.fromisoformat(a.today) if a.today else date.today()
+    data_arg = None if a.db else (a.data or os.environ.get("DANSK_DATA_DIR"))
 
-    if not data_dir.is_dir():
-        print(f"no data folder at {data_dir}: pass --data or set DANSK_DATA_DIR")
-        return 1
+    if data_arg:
+        data_dir = Path(data_arg).expanduser()
+        source = Path(a.words or os.environ.get("DANSK_WORDS_DIR") or data_dir / "words").expanduser()
+        if not data_dir.is_dir():
+            print(f"no data folder at {data_dir}: pass --data or set DANSK_DATA_DIR")
+            return 1
+        data = build_page(data_dir, source, out, today)
+    else:
+        import dansk_db
+        source = dansk_db.db_path(a.db)
+        if not source.is_file():
+            print(f"no database at {source}: run a session first, import with "
+                  f"scripts/import_fluent.py, or pass --data for JSON mode")
+            return 1
+        data = build_data_db(source, today)
+        write_page(data, out)
 
-    data = build_page(data_dir, words_dir, out, today)
     s = data["stats"]
     print(f"wrote {out}")
     print(f"  {s['words']} word notes, {s['grammar']} grammar notes, "
           f"{s['tracked']} tracked items, {s['due']} due on {s['today']}")
     if not data["words"]:
-        print(f"  warning: no word notes found in {words_dir}")
+        print(f"  warning: no word notes found in {source}")
     return 0
 
 

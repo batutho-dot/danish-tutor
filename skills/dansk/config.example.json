@@ -1,0 +1,13 @@
+{
+  "learner_name": "",
+  "level": "A2",
+  "target_level": "B2",
+  "goal": "everyday conversation",
+  "support_language": "English",
+  "db_path": "~/.claude/danish-tutor/dansk.db",
+  "notes_dir": "",
+  "speak_replies": false,
+  "listen_command": "",
+  "listen_rate": 150,
+  "replay_rate": 130
+}

@@ -3,20 +3,27 @@
 
     python verify.py
 
-Steps: every .py compiles; the skill has frontmatter whose name matches its folder and a
-description; the dashboard builds from example-data into a temporary folder and the page
-holds a fixed string from the example data; word notes are matched to their spaced-repetition
-items with the expected due dates; the README is at most 550 words; no file holds a banned
-string or an audio file; the repository is unchanged afterwards.
+Steps: every .py compiles; each skill under skills/ has frontmatter whose name matches its
+folder and a description; the dashboard builds (JSON mode) from example-data into a temporary
+folder and the page holds fixed strings from the example data; word notes are matched to their
+spaced-repetition items with the expected due dates; the SM-2 scheduler gives hand-computed
+intervals and easiness factors; the README is at most 550 words; no file holds a banned string
+or an audio file; the plugin manifests parse and agree; the unit tests pass; example-data
+imported into a temporary database builds the same dashboard summary and due dates; a session
+payload recorded into a temporary database can be read back, and a bad payload writes
+nothing; the repository is unchanged afterwards.
 
-The SM-2 interval arithmetic is not tested here: it lives in the external Fluent plugin's
-update-db.py, which this repository does not contain. The step says so and is skipped.
+SM-2 rules: Wozniak (1990), "SuperMemo 2: Algorithm",
+https://super-memory.com/english/ol/sm2.htm.
 
-Needs only the Python standard library. Writes nothing inside the repository.
+Needs only the Python standard library. Writes nothing inside the repository: every database
+and page goes to a temporary folder, and child processes run without writing bytecode.
 """
 import importlib.util
+import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -58,31 +65,52 @@ def step_compile():
 
 def step_frontmatter():
     skills = []
-    for d in sorted(os.listdir(os.path.join(ROOT, "skill"))):
-        p = os.path.join(ROOT, "skill", d, "SKILL.md")
+    for d in sorted(os.listdir(os.path.join(ROOT, "skills"))):
+        p = os.path.join(ROOT, "skills", d, "SKILL.md")
         if os.path.isfile(p):
             skills.append((d, p))
     if not skills:
-        raise Fail("no skill/*/SKILL.md found")
+        raise Fail("no skills/*/SKILL.md found")
     for folder, p in skills:
         text = open(p, encoding="utf-8").read()
         m = re.match(r"---\r?\n(.*?)\r?\n---\r?\n", text, re.S)
         if not m:
-            raise Fail(f"skill/{folder}/SKILL.md: no frontmatter")
+            raise Fail(f"skills/{folder}/SKILL.md: no frontmatter")
         name = re.search(r"^name:\s*(\S+)", m.group(1), re.M)
         if not name or name.group(1) != folder:
-            raise Fail(f"skill/{folder}/SKILL.md: name does not match folder")
+            raise Fail(f"skills/{folder}/SKILL.md: name does not match folder")
         if not re.search(r"^description:\s*\S", m.group(1), re.M):
-            raise Fail(f"skill/{folder}/SKILL.md: no description")
+            raise Fail(f"skills/{folder}/SKILL.md: no description")
     return f"{len(skills)} skill(s)"
+
+
+def child_env(tmp):
+    """Environment for child processes: no bytecode, UTF-8, and settings and database paths
+    pointing into the temp folder so no real learner file is ever read."""
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8",
+               DANISH_TUTOR_CONFIG=os.path.join(tmp, "no-config.json"),
+               DANISH_TUTOR_DB=os.path.join(tmp, "unused.db"))
+    env.pop("DANSK_DATA_DIR", None)
+    env.pop("DANSK_WORDS_DIR", None)
+    return env
+
+
+def run_py(args, tmp, stdin=None):
+    return subprocess.run([PY, "-B", *args], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", env=child_env(tmp), cwd=tmp, input=stdin)
+
+
+def load(name, *parts):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(ROOT, *parts))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def step_dashboard():
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "dash.html")
-        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8")
-        env.pop("DANSK_DATA_DIR", None)
-        env.pop("DANSK_WORDS_DIR", None)
+        env = child_env(tmp)
         r = subprocess.run([PY, "-B", os.path.join(ROOT, "dashboard", "build_dashboard.py"),
                             "--data", os.path.join(ROOT, "example-data"), "--out", out,
                             "--today", TODAY],
@@ -126,8 +154,23 @@ def step_sm2_match():
 
 
 def step_scheduling():
-    return ("skipped: SM-2 intervals are computed by the external Fluent plugin's "
-            "update-db.py, which is not in this repository")
+    """Hand-computed SM-2 values (Wozniak 1990): a new item answered 5, 5, 5 gets intervals
+    1, 6, ceil(6 * 2.8) = 17 with EF 2.6, 2.7, 2.8; a 2 then resets to 1 day with EF unchanged;
+    repeated 3s (EF - 0.14 each) stop at the 1.3 floor."""
+    db = load("dansk_db", "scripts", "dansk_db.py")
+    ef, i, n = 2.5, 0, 0
+    for q, want in [(5, (2.6, 1, 1)), (5, (2.7, 6, 2)), (5, (2.8, 17, 3)), (2, (2.8, 1, 0))]:
+        ef, i, n = db.sm2(q, ef, i, n)
+        if (round(ef, 6), i, n) != want:
+            raise Fail(f"q={q}: got EF {ef}, interval {i}, repetitions {n}; expected {want}")
+    ef, i, n = 2.5, 0, 0
+    for _ in range(12):
+        ef, i, n = db.sm2(3, ef, i, n)
+    if ef != 1.3:
+        raise Fail(f"EF after twelve 3s is {ef}, expected the 1.3 floor")
+    if db.mastery(7) != 5 or db.mastery(2) != 2:
+        raise Fail("mastery should be min(5, repetitions)")
+    return "intervals 1, 6, 17 then reset to 1 with EF 2.8 kept; EF floor 1.3"
 
 
 def step_readme():
@@ -156,6 +199,11 @@ BANNED = [
     (re.compile("gh" + "p_[A-Za-z0-9]{20,}"), "GitHub token"),
     (re.compile(chr(0x2014)), "em dash"),
 ]
+# Narrow exemptions: the author / owner "name" line of the two plugin manifests, and the
+# public repository slug used in install commands. Built from pieces like BANNED.
+MANIFESTS = (".claude-plugin/plugin.json", ".claude-plugin/marketplace.json")
+MANIFEST_HOLDER = re.compile(r'^\s*"(author|owner)": \{"name": "[^"]*"\},?\s*$')
+REPO_SLUG = "ba" + "tutho-dot/danish-tutor"
 AUDIO = (".wav", ".mp3", ".ogg", ".m4a", ".flac", ".aiff")
 
 
@@ -170,9 +218,13 @@ def step_banned():
             text = open(p, encoding="utf-8").read()
         except (UnicodeDecodeError, OSError):
             continue
+        posix = Path(rel).as_posix()
         for n, line in enumerate(text.splitlines(), 1):
             if rel == "LICENSE" and line.startswith("Copyright (c)"):
                 continue                       # the licence holder's line stays as written
+            if posix in MANIFESTS and MANIFEST_HOLDER.match(line):
+                continue                       # the plugin's author / owner field, same holder
+            line = line.replace(REPO_SLUG, "")  # the public repository name in install lines
             for rx, what in BANNED:
                 if rx.search(line):
                     hits.append(f"{rel}:{n} {what}")
@@ -181,13 +233,120 @@ def step_banned():
     return "none"
 
 
+def step_manifest():
+    base = os.path.join(ROOT, ".claude-plugin")
+    try:
+        with open(os.path.join(base, "plugin.json"), encoding="utf-8") as f:
+            plugin = json.load(f)
+        with open(os.path.join(base, "marketplace.json"), encoding="utf-8") as f:
+            market = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise Fail(f"manifest does not parse: {e}")
+    entries = [p for p in market.get("plugins", []) if p.get("name") == plugin.get("name")]
+    if plugin.get("name") != "danish-tutor" or market.get("name") != "danish-tutor" or not entries:
+        raise Fail("plugin.json name and marketplace.json names do not match")
+    if entries[0].get("version") != plugin.get("version"):
+        raise Fail("versions differ between plugin.json and marketplace.json")
+    if not os.path.isfile(os.path.join(ROOT, "skills", "dansk", "SKILL.md")):
+        raise Fail("skills/dansk/SKILL.md missing")
+    return f"{plugin['name']} {plugin.get('version')}, both manifests parse, skills/dansk present"
+
+
+def step_unittests():
+    with tempfile.TemporaryDirectory() as tmp:
+        r = subprocess.run([PY, "-B", "-m", "unittest", "discover", "-s", "tests"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           env=child_env(tmp), cwd=ROOT)
+    lines = (r.stdout + r.stderr).strip().splitlines()
+    ran = next((x for x in lines if x.startswith("Ran ")), "no tests ran")
+    if r.returncode:
+        raise Fail(f"exit {r.returncode}: " + " | ".join(lines[-12:]))
+    return f"{ran}, OK"
+
+
+DUE_CHECKS = [("nøgle", "2026-11-05", True), ("morgenmad", "2026-11-10", False),
+              ("at spise", "2026-11-05", True), ("ikke i bisætninger", "2026-11-03", True)]
+
+
+def step_db_import():
+    with tempfile.TemporaryDirectory() as tmp:
+        dbf = os.path.join(tmp, "import.db")
+        r = run_py([os.path.join(ROOT, "scripts", "import_fluent.py"),
+                    "--data", os.path.join(ROOT, "example-data"), "--db", dbf], tmp)
+        if r.returncode:
+            raise Fail(f"import exit {r.returncode}: {(r.stdout + r.stderr).strip()}")
+        out = os.path.join(tmp, "dash.html")
+        r = run_py([os.path.join(ROOT, "dashboard", "build_dashboard.py"), "--db", dbf,
+                    "--out", out, "--today", TODAY], tmp)
+        if r.returncode:
+            raise Fail(f"dashboard exit {r.returncode}: {(r.stdout + r.stderr).strip()}")
+        want_line = f"13 word notes, 1 grammar notes, 16 tracked items, 15 due on {TODAY}"
+        if want_line not in r.stdout:
+            raise Fail(f"summary line missing, got: {r.stdout.strip()}")
+        with open(out, encoding="utf-8") as f:
+            page = f.read()
+        for want in ('"head": "nøgle"', '"gloss": "breakfast"', "example-session-002"):
+            if want not in page:
+                raise Fail(f"page lacks {want}")
+        dash = load("build_dashboard", "dashboard", "build_dashboard.py")
+        words = dash.build_data_db(Path(dbf), date.fromisoformat(TODAY))["words"]
+        by_head = {w["head"]: w for w in words}
+        for head, due, overdue in DUE_CHECKS:
+            w = by_head.get(head)
+            if w is None or w["due"] != due or w["overdue"] != overdue:
+                got = (w["due"], w["overdue"]) if w else None
+                raise Fail(f"{head}: {got}, expected {due} {overdue}")
+    return f"same summary line, {len(DUE_CHECKS)} due dates match JSON mode"
+
+
+def step_record():
+    payload = {
+        "date": "2026-11-07", "duration_minutes": 5, "size": "small", "input_mode": "typed",
+        "topic": "invented check", "skills": ["speaking"],
+        "new_words": [{"headword": "værelse", "gloss": "room", "example": "Mit værelse er lille."}],
+        "listening": [{"sentence": "Huset har tre værelser.", "result": "missed"}],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        dbf = os.path.join(tmp, "record.db")
+        script = os.path.join(ROOT, "scripts", "dansk_db.py")
+        bad = dict(payload, size="huge")
+        r = run_py([script, "record", "--db", dbf], tmp, json.dumps(bad, ensure_ascii=False))
+        if r.returncode != 1:
+            raise Fail(f"bad payload: exit {r.returncode}, expected 1: {r.stdout.strip()}")
+        r = run_py([script, "record", "--db", dbf], tmp, json.dumps(payload, ensure_ascii=False))
+        if r.returncode:
+            raise Fail(f"record exit {r.returncode}: {(r.stdout + r.stderr).strip()}")
+        want = "saved session-2026-11-07, 0 reviews, 1 new words, 0 errors; 1 items due tomorrow"
+        if want not in r.stdout:
+            raise Fail(f"saved line missing, got: {r.stdout.strip()}")
+        con = sqlite3.connect(dbf)              # re-open from scratch
+        try:
+            sessions = con.execute("SELECT id FROM sessions").fetchall()
+            word = con.execute("SELECT id, gloss FROM words WHERE headword = ?",
+                               ("værelse",)).fetchone()
+            ex = con.execute("SELECT sentence FROM examples").fetchall()
+            item = con.execute("SELECT due_date, easiness_factor FROM items WHERE id = ?",
+                               ("vocab_vaerelse",)).fetchone()
+        finally:
+            con.close()
+        if sessions != [("session-2026-11-07",)]:
+            raise Fail(f"sessions {sessions}: the bad payload wrote something, or the good one did not")
+        if not word or word[1] != "room" or ex != [("Mit værelse er lille.",)]:
+            raise Fail(f"word or example not stored: {word} {ex}")
+        if item != ("2026-11-08", 2.5):
+            raise Fail(f"vocab_vaerelse is {item}, expected due 2026-11-08 with EF 2.5")
+    return "word, example, item due date and session read back; bad payload exit 1, nothing written"
+
+
 def main():
     print(f"verify: {os.path.basename(ROOT)}")
     before = snapshot()
     steps = [("compile", step_compile), ("frontmatter", step_frontmatter),
              ("dashboard build", step_dashboard), ("sm2 match", step_sm2_match),
              ("scheduling", step_scheduling), ("readme length", step_readme),
-             ("banned strings", step_banned)]
+             ("banned strings", step_banned), ("plugin manifest", step_manifest),
+             ("unit tests", step_unittests), ("db import", step_db_import),
+             ("record round trip", step_record)]
     for name, fn in steps:
         try:
             print(f"{name}: {fn()}")
