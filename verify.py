@@ -11,7 +11,9 @@ intervals and easiness factors; the README is at most 550 words; no file holds a
 or an audio file; the plugin manifests parse and agree; the unit tests pass; example-data
 imported into a temporary database builds the same dashboard summary and due dates; a session
 payload recorded into a temporary database can be read back, and a bad payload writes
-nothing; the repository is unchanged afterwards.
+nothing; the committed app build in app/dist is complete (every file index.html references,
+THIRD_PARTY_NOTICES.txt) and scripts/dansk_app.py serves it from a temporary database with
+its token check; the repository is unchanged afterwards. app/node_modules is not needed.
 
 SM-2 rules: Wozniak (1990), "SuperMemo 2: Algorithm",
 https://super-memory.com/english/ol/sm2.htm.
@@ -42,7 +44,9 @@ class Fail(Exception):
 
 def files(exts=None):
     for dirpath, dirnames, filenames in os.walk(ROOT):
-        dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__", ".venv", "data")]
+        # node_modules is gitignored (app/node_modules): installed packages, not the repository
+        dirnames[:] = [d for d in dirnames
+                       if d not in (".git", "__pycache__", ".venv", "data", "node_modules")]
         for f in filenames:
             if exts is None or f.endswith(exts):
                 yield os.path.join(dirpath, f)
@@ -204,6 +208,9 @@ BANNED = [
 MANIFESTS = (".claude-plugin/plugin.json", ".claude-plugin/marketplace.json")
 MANIFEST_HOLDER = re.compile(r'^\s*"(author|owner)": \{"name": "[^"]*"\},?\s*$')
 REPO_SLUG = "ba" + "tutho-dot/danish-tutor"
+# The generated third-party licence file quotes other authors' copyright lines, some with an
+# e-mail address. Only that rule, only that file.
+NOTICES = "app/dist/THIRD_PARTY_NOTICES.txt"
 AUDIO = (".wav", ".mp3", ".ogg", ".m4a", ".flac", ".aiff")
 
 
@@ -220,12 +227,14 @@ def step_banned():
             continue
         posix = Path(rel).as_posix()
         for n, line in enumerate(text.splitlines(), 1):
-            if rel == "LICENSE" and line.startswith("Copyright (c)"):
-                continue                       # the licence holder's line stays as written
+            if rel == "LICENSE" and n == 1 and line.startswith("Required Notice: Copyright (c)"):
+                continue                       # the licence holder's notice line stays as written
             if posix in MANIFESTS and MANIFEST_HOLDER.match(line):
                 continue                       # the plugin's author / owner field, same holder
             line = line.replace(REPO_SLUG, "")  # the public repository name in install lines
             for rx, what in BANNED:
+                if posix == NOTICES and what == "email address":
+                    continue                   # third-party copyright lines, kept verbatim
                 if rx.search(line):
                     hits.append(f"{rel}:{n} {what}")
     if hits:
@@ -338,6 +347,71 @@ def step_record():
     return "word, example, item due date and session read back; bad payload exit 1, nothing written"
 
 
+def step_app_build():
+    """The committed build in app/dist is complete, and the server serves it against a
+    temporary database: index.html with the token, 403 without it, the summary with it."""
+    dist = Path(ROOT, "app", "dist")
+    index = dist / "index.html"
+    if not index.is_file():
+        raise Fail("app/dist/index.html missing: cd app && npm ci && npm run build")
+    html = index.read_text(encoding="utf-8")
+    refs = re.findall(r'(?:src|href)="([^"]+)"', html)
+    local = [r for r in refs if not re.match(r"^(?:[a-z]+:|//|#)", r)]
+    if not any(r.endswith(".js") for r in local):
+        raise Fail("index.html references no script")
+    for r in local:
+        if not (dist / r.lstrip("./")).is_file():
+            raise Fail(f"index.html references {r}, which is not in app/dist")
+    if "__DANSK_TOKEN__" not in html:
+        raise Fail("index.html lacks the token placeholder")
+    notices = dist / "THIRD_PARTY_NOTICES.txt"
+    if not notices.is_file() or "recharts" not in notices.read_text(encoding="utf-8"):
+        raise Fail("app/dist/THIRD_PARTY_NOTICES.txt missing or incomplete")
+
+    import http.client
+    import threading
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    app = load("dansk_app", "scripts", "dansk_app.py")
+    with tempfile.TemporaryDirectory() as tmp:
+        dbf = Path(tmp, "app.db")
+        r = run_py([os.path.join(ROOT, "scripts", "import_fluent.py"),
+                    "--data", os.path.join(ROOT, "example-data"), "--db", str(dbf)], tmp)
+        if r.returncode:
+            raise Fail(f"import exit {r.returncode}: {(r.stdout + r.stderr).strip()}")
+        srv = app.make_server(dbf, dist, port=0, today=TODAY, quiet=True)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            def get(path, token=True):
+                c = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+                h = {"Host": f"127.0.0.1:{srv.port}"}
+                if token:
+                    h["X-Dansk-Token"] = srv.token
+                c.request("GET", path, headers=h)
+                resp = c.getresponse()
+                body = resp.read()
+                c.close()
+                return resp.status, body
+            status, body = get("/", token=False)
+            if status != 200 or srv.token.encode() not in body:
+                raise Fail(f"/ gave {status} or lacks the token")
+            js = next(x for x in local if x.endswith(".js"))
+            if get("/" + js.lstrip("./"), token=False)[0] != 200:
+                raise Fail(f"{js} not served")
+            if get("/api/summary", token=False)[0] != 403:
+                raise Fail("/api/summary without the token was not refused")
+            status, body = get("/api/summary")
+            s = json.loads(body)
+            if status != 200 or (s["words"], s["grammar"], s["items"], s["due"]) != (13, 1, 16, 15):
+                raise Fail(f"/api/summary {status}: {body[:200]!r}")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            t.join(5)
+    return (f"{len(local)} referenced files present, notices present; served from a temp db: "
+            "index with token, 403 without it, summary 13 words, 16 items, 15 due")
+
+
 def main():
     print(f"verify: {os.path.basename(ROOT)}")
     before = snapshot()
@@ -346,7 +420,7 @@ def main():
              ("scheduling", step_scheduling), ("readme length", step_readme),
              ("banned strings", step_banned), ("plugin manifest", step_manifest),
              ("unit tests", step_unittests), ("db import", step_db_import),
-             ("record round trip", step_record)]
+             ("record round trip", step_record), ("app build", step_app_build)]
     for name, fn in steps:
         try:
             print(f"{name}: {fn()}")

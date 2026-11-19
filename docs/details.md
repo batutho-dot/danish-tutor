@@ -11,7 +11,9 @@
 | `scripts/dansk_text.py` | ASCII folding, word note parsing and writing (shared) |
 | `scripts/import_fluent.py` | One-way import from Fluent-format JSON |
 | `scripts/speak.py` | Speaks one hidden sentence with an installed Danish voice |
-| `dashboard/` | Static dashboard builder and its HTML template |
+| `scripts/dansk_app.py` | Local web app server: serves `app/dist` and a JSON API over the database |
+| `app/` | The app's source (Vite, React, TypeScript, Astryx); `app/dist` is the committed build |
+| `dashboard/` | Static export: dashboard builder and its HTML template |
 | `tests/` | Unit tests (temp folders only) |
 | `verify.py` | End-to-end check, prints `verify: PASS` or `verify: FAIL at <step>` |
 
@@ -42,7 +44,7 @@ row ids (`SERIAL` or identity columns in PostgreSQL) and `lastrowid`.
 
 | Table | Columns |
 |---|---|
-| `meta` | `key`, `value`. Holds `schema_version` (now `1`), and `example_data` when the example files were imported |
+| `meta` | `key`, `value`. Holds `schema_version` (now `1`), `example_data` when the example files were imported, and `app_review_seconds:<session id>` for time spent reviewing in the app |
 | `learner` | one row: `level`, `target_level`, `support_language` |
 | `words` | `headword` (unique), `kind` (`word` or `grammar`), `pos`, `gender`, `level`, `forms`, `definition`, `gloss`, `notes`, `learned`, `source` |
 | `examples` | `word_id`, `sentence`, `session_id` |
@@ -145,7 +147,83 @@ and PowerShell in an environment variable, with argument lists only. Exit codes:
 1 bad arguments, 3 no Danish voice (with a one-line hint on how to add one), 4 the speech
 program failed.
 
-## The dashboard
+## The app
+
+```
+python scripts/dansk_app.py [--db PATH] [--port N] [--no-browser] [--demo] [--today YYYY-MM-DD]
+```
+
+Standard library only; works on Windows and macOS. The database is found the same way as
+`dansk_db.py` (`--db`, `DANISH_TUTOR_DB`, `db_path`, then the default). With no database it
+says so and exits; it never creates one. `--demo` imports `example-data` into a fresh
+temporary database, serves that with "today" fixed to 2026-11-06 (unless `--today` is
+given) and deletes it on exit. It listens on 127.0.0.1, port 8765 or the next free one,
+prints the URL and opens the browser unless `--no-browser`. Ctrl+C (or SIGTERM, or
+Ctrl+Break on Windows) stops it.
+
+The pages: an overview (due today, words known, streak, minutes this week, a 14-day chart,
+error patterns due, recent sessions), review (due items oldest first; a card shows the
+Danish word or the wrong sentence, and Space reveals gloss, forms, Danish definition and
+examples), the word bank (search, filters, sortable columns, a detail panel with review
+history, edit and delete) and sessions (errors and listening results per session). A banner
+shows when the database holds the example data.
+
+Grades map to SM-2 quality: Again 1 (incorrect response; the correct one remembered), Hard
+3 (correct with serious difficulty), Good 4 (correct after a hesitation), Easy 5 (perfect
+response). The interval on each button comes from the server's preview, which calls the same
+`sm2()` as the review itself; the browser computes no schedule. "Streak" here is the number
+of consecutive days with a session ending today or yesterday (0 otherwise), which differs
+from the static export's count back from the latest session.
+
+"Hear it" uses the browser's `speechSynthesis` with the first voice whose language starts
+with `da`. With none installed the button is disabled and its tooltip says how to add one.
+No audio goes through the server.
+
+### Reviews done in the app
+
+Each review needs a session. The app uses one session row per day, id
+`app-review-YYYY-MM-DD`, `input_mode` typed, `size` small, `skills` `["vocabulary"]`, topic
+"Review in the app". Its `duration_minutes` is the time spent on the cards that day (at most
+600 seconds counted per card), rounded to whole minutes; the seconds are kept in `meta`.
+These rows count towards the streak and the minutes like any session, and cannot clash with
+`session-YYYY-MM-DD` ids from `record`.
+
+### API
+
+JSON under `/api/`. Reads: `GET summary`, `due`, `patterns`, `words?q=&kind=&level=&due=`
+(`kind` word or grammar, `due` due or not_due), `words/<id>` (with examples, items and
+review history), `sessions`, `sessions/<id>` (errors, listening, reviews),
+`review/preview?item_id=` (next interval, EF and due date for qualities 1, 3, 4, 5). Writes:
+`POST review` `{item_id, quality 0..5, elapsed_seconds}` runs `dansk_db.apply_review` and
+logs a review row; `PUT words/<id>` changes `headword`, `forms`, `definition`, `gloss`,
+`pos`, `gender`, `level`, `notes` (a linked item's content and answer follow the headword
+and gloss); `DELETE words/<id>` removes the word, its examples, its items and their reviews.
+Each write is one transaction. Bad input gets 400 with a message and changes nothing;
+unknown ids give 404; the client never sees a traceback.
+
+### Security
+
+- Bound to 127.0.0.1 only.
+- A random token per run is written into the served `index.html` (a meta tag). Every
+  `/api/` request must send it in the `X-Dansk-Token` header, or gets 403.
+- A request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` gets 403, which
+  stops DNS rebinding.
+- No CORS headers, so other sites cannot read responses. A Content-Security-Policy allows
+  only the app's own scripts and connections; the app makes no network calls (the theme's
+  web font is left out for that reason).
+- Static files are served only from inside `app/dist`; `..`, encoded slashes and absolute
+  paths give 404.
+
+### Building the app
+
+`app/dist` is committed, so plugin users need no Node. To rebuild after changing `app/src`:
+`cd app && npm ci && npm run build` (Node 24 was used). The build escapes non-ASCII
+characters in the emitted JavaScript and CSS, drops licence comments from the bundle and
+writes `app/dist/THIRD_PARTY_NOTICES.txt` with every bundled package, its version and its
+licence text. The UI is built with Astryx (`@astryxdesign/core`, MIT); `app/AGENTS.md` holds
+its notes for coding agents.
+
+## The static export (dashboard)
 
 ```
 python dashboard/build_dashboard.py [--db FILE | --data DIR [--words DIR]] [--out FILE] [--today YYYY-MM-DD]
@@ -225,5 +303,17 @@ the summary line and three fixed strings; word note to item matching with four f
 dates; SM-2 with hand-computed values; README length; banned strings and audio files; plugin
 manifests; the unit tests; import of `example-data` into a temporary database and a dashboard
 built from it with the same summary line and due dates; a recorded payload read back from a
-temporary database, and a bad payload that writes nothing; repository unchanged. It ends with
+temporary database, and a bad payload that writes nothing; the app build (every file
+`app/dist/index.html` references exists, the notices file is there, and the server serves the
+page with its token, refuses `/api/summary` without it and returns the example counts with
+it); repository unchanged. `node_modules` folders are skipped, so verify does not need Node.
+The banned-string check has one narrow exemption here: e-mail addresses in
+`app/dist/THIRD_PARTY_NOTICES.txt`, which quotes other authors' copyright lines. It ends with
 `verify: PASS` or `verify: FAIL at <step>: <reason>`, exit code 0 or 1.
+
+## Licence
+
+PolyForm Strict 1.0.0 (`LICENSE`, with the Required Notice line at the top): free for
+noncommercial use; no distributing it, and no changes or new works based on it; commercial
+use needs permission. Versions up to commit 9ba8b3f were released under MIT. Third-party code
+bundled in `app/dist` keeps its own licences, listed in `app/dist/THIRD_PARTY_NOTICES.txt`.

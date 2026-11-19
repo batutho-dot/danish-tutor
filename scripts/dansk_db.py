@@ -340,6 +340,233 @@ def top_error_patterns(con, limit: int = 5) -> list[dict]:
     return out
 
 
+def apply_review(con, item_id: str, quality: int, day: str, session_id: str | None) -> dict:
+    """One SM-2 review of one item: schedule updated and a review row logged. Caller owns the
+    transaction. Returns the new schedule."""
+    it = get_item(con, item_id)
+    ef, interval, reps = sm2(quality, it["easiness_factor"], it["interval_days"], it["repetitions"])
+    due = add_days(day, interval)
+    update_schedule(con, item_id, ef, interval, reps, due, day, True)
+    insert_review(con, item_id, session_id, day, quality, ef, interval)
+    return {"item_id": item_id, "quality": quality, "easiness_factor": ef, "interval_days": interval,
+            "repetitions": reps, "due_date": due, "mastery_level": mastery(reps)}
+
+
+def preview_review(it, day: str, qualities=range(6)) -> list[dict]:
+    """What each quality would do to this item, without writing anything."""
+    out = []
+    for q in qualities:
+        ef, interval, reps = sm2(q, it["easiness_factor"], it["interval_days"], it["repetitions"])
+        out.append({"quality": q, "easiness_factor": ef, "interval_days": interval,
+                    "repetitions": reps, "due_date": add_days(day, interval)})
+    return out
+
+
+# ---------------------------------------------------------------- reads and edits for the app
+
+WORD_EDIT_FIELDS = ("headword", "forms", "definition", "gloss", "pos", "gender", "level", "notes")
+APP_SESSION_PREFIX = "app-review-"
+
+
+def get_word(con, word_id: int):
+    r = con.execute("SELECT * FROM words WHERE id = ?", (word_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def word_examples(con, word_id: int) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT id, sentence, session_id FROM examples WHERE word_id = ? ORDER BY id", (word_id,))]
+
+
+def items_for_word(con, word_id: int) -> list[dict]:
+    return [dict(r) for r in con.execute("SELECT * FROM items WHERE word_id = ? ORDER BY id",
+                                         (word_id,))]
+
+
+def item_reviews(con, item_id: str) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT id, session_id, date, quality, ef_after, interval_after FROM reviews"
+        " WHERE item_id = ? ORDER BY date, id", (item_id,))]
+
+
+def word_rows(con, today: str, q: str = "", kind: str = "", level: str = "",
+              due: str = "") -> list[dict]:
+    """The word bank with each word's first linked item. Filters: q (headword or gloss,
+    case-insensitive substring), kind (word/grammar), level, due ('due' or 'not_due')."""
+    sql = ("SELECT w.id, w.headword, w.kind, w.pos, w.gender, w.level, w.forms, w.gloss,"
+           " w.learned, i.id AS item_id, i.mastery_level, i.due_date, i.total_reviews"
+           " FROM words w LEFT JOIN items i ON i.id ="
+           " (SELECT MIN(i2.id) FROM items i2 WHERE i2.word_id = w.id)")
+    where, args = [], []
+    if q:
+        where.append("(LOWER(w.headword) LIKE ? OR LOWER(COALESCE(w.gloss, '')) LIKE ?)")
+        args += [f"%{q.lower()}%", f"%{q.lower()}%"]
+    if kind:
+        where.append("w.kind = ?")
+        args.append(kind)
+    if level:
+        where.append("w.level = ?")
+        args.append(level)
+    if due == "due":
+        where.append("i.due_date IS NOT NULL AND i.due_date <= ?")
+        args.append(today)
+    elif due == "not_due":
+        where.append("(i.due_date IS NULL OR i.due_date > ?)")
+        args.append(today)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY w.headword"
+    rows = []
+    for r in con.execute(sql, args):
+        d = dict(r)
+        d["is_due"] = bool(d["due_date"] and d["due_date"] <= today)
+        rows.append(d)
+    return rows
+
+
+def word_levels(con) -> list[str]:
+    return [r[0] for r in con.execute(
+        "SELECT DISTINCT level FROM words WHERE level IS NOT NULL AND level <> '' ORDER BY level")]
+
+
+def update_word(con, word_id: int, fields: dict) -> None:
+    """Change the editable fields of one word. A linked item's content and answer follow the
+    headword and gloss, so the review card shows the edited text. Caller owns the transaction."""
+    fields = {k: v for k, v in fields.items() if k in WORD_EDIT_FIELDS}
+    for k, v in fields.items():
+        con.execute(f"UPDATE words SET {k} = ? WHERE id = ?", (v, word_id))
+    if "headword" in fields:
+        con.execute("UPDATE items SET content = ? WHERE word_id = ?", (fields["headword"], word_id))
+    if "gloss" in fields:
+        con.execute("UPDATE items SET answer = ? WHERE word_id = ?", (fields["gloss"], word_id))
+
+
+def delete_word(con, word_id: int) -> dict:
+    """Delete a word, its examples, its items and their reviews. Caller owns the transaction."""
+    ids = [r["id"] for r in con.execute("SELECT id FROM items WHERE word_id = ?", (word_id,))]
+    n_rev = 0
+    for iid in ids:
+        n_rev += con.execute("DELETE FROM reviews WHERE item_id = ?", (iid,)).rowcount
+    n_items = con.execute("DELETE FROM items WHERE word_id = ?", (word_id,)).rowcount
+    n_ex = con.execute("DELETE FROM examples WHERE word_id = ?", (word_id,)).rowcount
+    n_w = con.execute("DELETE FROM words WHERE id = ?", (word_id,)).rowcount
+    return {"words": n_w, "items": n_items, "examples": n_ex, "reviews": n_rev}
+
+
+def due_cards(con, today: str) -> list[dict]:
+    """Every item due on or before today, oldest first, with what a review card shows."""
+    rows = con.execute(
+        "SELECT i.id AS item_id, i.kind, i.content, i.answer, i.category, i.due_date,"
+        " i.mastery_level, i.total_reviews, i.interval_days, i.word_id, w.headword, w.forms,"
+        " w.definition, w.gloss, w.pos, w.gender, w.level"
+        " FROM items i LEFT JOIN words w ON w.id = i.word_id"
+        " WHERE i.due_date IS NOT NULL AND i.due_date <= ? ORDER BY i.due_date, i.id",
+        (today,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["examples"] = [e["sentence"] for e in word_examples(con, d["word_id"])] if d["word_id"] else []
+        if d["kind"] == "error_pattern":
+            pid = d["item_id"][len("error_"):] if d["item_id"].startswith("error_") else d["item_id"]
+            e = con.execute("SELECT context, severity FROM errors WHERE pattern_id IN (?, ?)"
+                            " ORDER BY id DESC LIMIT 1", (pid, d["item_id"])).fetchone()
+            d["context"] = e["context"] if e else None
+            d["severity"] = e["severity"] if e else None
+        out.append(d)
+    return out
+
+
+def error_pattern_items(con, today: str | None = None) -> list[dict]:
+    """Error-pattern items (what was said, the correct form), oldest due first; only those
+    due on or before `today` when it is given."""
+    sql = ("SELECT id, content, answer, category, due_date, total_reviews, mastery_level"
+           " FROM items WHERE kind = 'error_pattern'")
+    args = []
+    if today:
+        sql += " AND due_date IS NOT NULL AND due_date <= ?"
+        args.append(today)
+    sql += " ORDER BY due_date, id"
+    return [dict(r) for r in con.execute(sql, args)]
+
+
+def session_rows(con) -> list[dict]:
+    rows = con.execute(
+        "SELECT s.id, s.date, s.duration_minutes, s.size, s.input_mode, s.topic, s.skills,"
+        " s.accuracy, s.summary,"
+        " (SELECT COUNT(*) FROM errors e WHERE e.session_id = s.id) AS errors,"
+        " (SELECT COUNT(*) FROM reviews r WHERE r.session_id = s.id) AS reviews,"
+        " (SELECT COUNT(*) FROM listening l WHERE l.session_id = s.id) AS listening"
+        " FROM sessions s ORDER BY s.date DESC, s.id DESC").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["skills"] = _skills(d["skills"])
+        out.append(d)
+    return out
+
+
+def _skills(text) -> list[str]:
+    try:
+        v = json.loads(text or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [str(x) for x in v] if isinstance(v, list) else []
+
+
+def get_session(con, session_id: str):
+    r = con.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    if r is None:
+        return None
+    d = dict(r)
+    d["skills"] = _skills(d["skills"])
+    d["errors"] = [dict(e) for e in con.execute(
+        "SELECT pattern_id, category, said, correct, context, severity FROM errors"
+        " WHERE session_id = ? ORDER BY id", (session_id,))]
+    d["listening"] = [dict(li) for li in con.execute(
+        "SELECT sentence, result FROM listening WHERE session_id = ? ORDER BY id", (session_id,))]
+    d["reviews"] = [dict(x) for x in con.execute(
+        "SELECT r.item_id, r.quality, r.interval_after, i.content FROM reviews r"
+        " LEFT JOIN items i ON i.id = r.item_id WHERE r.session_id = ? ORDER BY r.id",
+        (session_id,))]
+    return d
+
+
+def minutes_by_day(con, first: str, last: str) -> dict[str, int]:
+    return {r[0]: int(r[1] or 0) for r in con.execute(
+        "SELECT date, SUM(COALESCE(duration_minutes, 0)) FROM sessions"
+        " WHERE date >= ? AND date <= ? GROUP BY date", (first, last))}
+
+
+def reviews_by_day(con, first: str, last: str) -> dict[str, int]:
+    return {r[0]: int(r[1]) for r in con.execute(
+        "SELECT date, COUNT(*) FROM reviews WHERE date >= ? AND date <= ? GROUP BY date",
+        (first, last))}
+
+
+def session_dates(con) -> list[str]:
+    return [r[0] for r in con.execute("SELECT DISTINCT date FROM sessions ORDER BY date")]
+
+
+def ensure_app_session(con, day: str, seconds: int) -> str:
+    """The session row that reviews done in the app belong to: one per day, id
+    app-review-YYYY-MM-DD, input_mode typed, size small, skills ["vocabulary"]. Its
+    duration_minutes is the time spent on the cards that day, rounded to whole minutes; the
+    exact seconds are kept in meta. Caller owns the transaction."""
+    sid = APP_SESSION_PREFIX + day
+    key = "app_review_seconds:" + sid
+    total = int(get_meta(con, key) or 0) + max(0, int(seconds))
+    set_meta(con, key, total)
+    minutes = round(total / 60)
+    if session_exists(con, sid):
+        con.execute("UPDATE sessions SET duration_minutes = ? WHERE id = ?", (minutes, sid))
+    else:
+        insert_session(con, {"id": sid, "date": day, "duration_minutes": minutes, "size": "small",
+                             "input_mode": "typed", "topic": "Review in the app",
+                             "skills": ["vocabulary"], "accuracy": None,
+                             "summary": "Flash-card review done in the local app."})
+    return sid
+
+
 def headwords(con) -> list[dict]:
     return [dict(r) for r in con.execute("SELECT headword, kind, gloss FROM words ORDER BY headword")]
 
@@ -497,11 +724,7 @@ def apply_record(con, p: dict, cfg: dict) -> dict:
                             **get_learner(con), **learner})
 
     for r in p.get("reviews", []):
-        it = get_item(con, r["item_id"])
-        ef, interval, reps = sm2(r["quality"], it["easiness_factor"], it["interval_days"],
-                                 it["repetitions"])
-        update_schedule(con, it["id"], ef, interval, reps, add_days(day, interval), day, True)
-        insert_review(con, it["id"], sid, day, r["quality"], ef, interval)
+        apply_review(con, r["item_id"], r["quality"], day, sid)
 
     new_count = 0
     note_jobs = []

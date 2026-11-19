@@ -14,16 +14,14 @@ Tutor:   Nå, så har du travlt i dag?                   (Oh, so you're busy tod
 Learner: Ja, og jeg har glemt min nøgle.               (Yes, and I have forgotten my key.)
 ```
 
-The word order slip ("har ikke" should be "ikke har") is logged silently and comes back in the debrief and in later sessions.
+The word order slip ("har ikke" should be "ikke har") is logged silently and comes back in the debrief and later sessions.
 
 ## What you need
 
 - Claude Code
 - Python 3.10 or newer
 - A Danish text-to-speech voice for the listening drill
-- Microphone dictation (optional; typing works too)
-
-No other plugin.
+- Dictation (optional; typing works)
 
 ## Install
 
@@ -36,21 +34,7 @@ In Claude Code:
 
 Then type `/dansk` (`/dansk kort` for 5 minutes, `/dansk lyt` for listening only).
 
-Optional settings (name, level, goal, support language, voice speed). macOS or Linux:
-
-```bash
-mkdir -p ~/.claude/danish-tutor
-cp skills/dansk/config.example.json ~/.claude/danish-tutor/config.json
-```
-
-Windows (PowerShell):
-
-```powershell
-New-Item -ItemType Directory -Force "$HOME\.claude\danish-tutor"
-Copy-Item skills\dansk\config.example.json "$HOME\.claude\danish-tutor\config.json"
-```
-
-Run these from a copy of this repository.
+Optional settings (level, goal, support language, voice speed): copy `skills/dansk/config.example.json` from this repository to `~/.claude/danish-tutor/config.json`.
 
 ## How it works
 
@@ -61,40 +45,43 @@ flowchart LR
   C --> D[Hidden listening drill, speak.py]
   D --> E[Debrief in the support language]
   E --> F[One dansk_db.py record call into SQLite]
-  F --> G[Optional: rebuild dashboard]
+  F --> G[Optional: open the app]
 ```
 
-Due items are woven into a conversation on your topic. Corrections wait until the debrief. Listening sentences are spoken, never shown before you answer. One `record` call saves everything in a single transaction and prints a line like `saved session-2026-11-02, 6 reviews, 3 new words, 1 errors; 9 items due tomorrow`. If the save fails, the skill says so and keeps the payload in a temp file.
+Due items are woven into a conversation on your topic. Corrections wait until the debrief. Listening sentences are spoken, never shown first. One `record` call saves everything in a single transaction and prints a line like `saved session-2026-11-02, 6 reviews, 3 new words, 1 errors; 9 items due tomorrow`.
 
-Scheduling is SM-2 (Wozniak 1990), implemented in `scripts/dansk_db.py`.
+Scheduling: SM-2 (Wozniak 1990), in `scripts/dansk_db.py`.
 
 ## Your data
 
-One SQLite file, `~/.claude/danish-tutor/dansk.db`. It stays on your machine; git never sees it. Coming from the Fluent plugin? Import once:
+One SQLite file, `~/.claude/danish-tutor/dansk.db`, on your machine only. Coming from the Fluent plugin? Import once:
 
 ```bash
 python scripts/import_fluent.py --data <your Fluent data folder> --words <your word notes folder>
 ```
 
-## Dashboard
+## The app
 
 ```bash
-python dashboard/build_dashboard.py
+python scripts/dansk_app.py
 ```
 
-It prints the path of a static page with your word bank and review queue. On the invented example data (`--data example-data --today 2026-11-06`) it prints:
+A local web app on your database: what is due, your streak and last 14 days, flip-card review (keys 1 to 4), a word bank you can search, edit and prune, and your sessions. It listens on 127.0.0.1 only. "Hear it" uses your browser's Danish voice.
 
-```
-13 word notes, 1 grammar notes, 16 tracked items, 15 due on 2026-11-06
-```
+No data yet? `--demo` serves a temporary copy of the invented example data.
+
+![Overview](docs/screenshots/overview.png)
+![Review](docs/screenshots/review.png)
+
+`dashboard/build_dashboard.py` still writes a static export.
 
 ## Limits
 
 - The Danish the model produces is not checked against a dictionary.
 - The listening drill needs an installed Danish voice; Windows and macOS do not always ship one.
-- SQLite only for now. The SQL is kept portable, so PostgreSQL could be added later.
+- SQLite only; the SQL is kept portable.
 - No claim about learning gains is made.
 
 ## Licence
 
-MIT, see `LICENSE`. Everything in `example-data/` is invented. More detail: [docs/details.md](docs/details.md).
+PolyForm Strict 1.0.0 (`LICENSE`): free for noncommercial use; no distributing it, and no changes or new works based on it; commercial use needs permission. Versions up to commit 9ba8b3f were released under MIT. Bundled third-party code in `app/dist` keeps its own licences (see `THIRD_PARTY_NOTICES.txt` there). `example-data/` is invented. More: [docs/details.md](docs/details.md).

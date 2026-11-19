@@ -305,8 +305,16 @@ this phase.
    Show that line to the learner as it is, so they can see the session really was saved.
    If `notes_dir` is set it also prints where the notes went.
 
-2. **Dashboard (optional).** If the learner wants to see their progress, rebuild the page and
-   give them its path:
+2. **The app (optional).** If the learner wants to see their progress, review cards or tidy
+   their word bank, offer the local app. It opens in their browser and runs until they stop
+   it with Ctrl+C, so start it only when they say yes, and in the background:
+
+   ```bash
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/dansk_app.py"
+   ```
+
+   Give them the URL it prints. If they only want a file to look at, build the static export
+   instead and give them its path:
 
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT}/dashboard/build_dashboard.py"
